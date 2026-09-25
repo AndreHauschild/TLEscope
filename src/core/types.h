@@ -324,6 +324,7 @@ typedef struct
     bool show_statistics;
     bool highlight_sunlit;
     bool show_slant_range;
+    bool show_isl;
     bool show_scattering;
     bool hint_vsync;
     bool show_skybox;
