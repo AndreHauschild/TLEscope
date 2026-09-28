@@ -53,10 +53,12 @@ static AppConfig cfg = []() -> AppConfig {
     c.show_statistics = false;
     c.highlight_sunlit = false;
     c.show_slant_range = false;
-    c.show_isl = false;
     c.show_scattering = false;
     c.hint_vsync = false;
     c.night_mode = false;
+    c.show_isl = false;
+    c.is_live = true;
+    c.current_epoch = 19571004.0;
     return c;
 }();
 
@@ -717,7 +719,7 @@ int main(void)
     float target_camAngleY = camAngleY;
     Vector3 target_camera3d_target = Camera3DParams.target;
 
-    double current_epoch = get_current_real_time_epoch();
+    double current_epoch = (cfg.is_live? get_current_real_time_epoch() : cfg.current_epoch);
     double time_multiplier = 1.0;
     double saved_multiplier = 1.0;
     bool is_2d_view = false;
@@ -1191,7 +1193,7 @@ int main(void)
                 LOG_INFO("VSync disabled, target FPS: %d", cfg.target_fps);
             }
         }
-        
+
         /* 2D picking/camera (skipped while Demo Mode owns the scene) */
         if (!DemoDirectorActive() && is_2d_view)
         {
@@ -2895,6 +2897,11 @@ int main(void)
     UnloadShader(g_coverage_shaders.shader3D);
     UnloadShader(g_coverage_shaders.shader2D);
     UnloadFont(customFont);
+
+    /* Save time related configurations */
+    double drift_sec = fabs(current_epoch - get_current_real_time_epoch()) * 86400.0;
+    cfg.is_live = (!is_auto_warping && time_multiplier == 1.0 && drift_sec<5.0);
+    cfg.current_epoch = current_epoch;
 
     /* persist layout state before shutdown */
     LayoutFillPersist(&cfg.ui_layout);

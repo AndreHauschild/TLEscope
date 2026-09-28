@@ -27,7 +27,6 @@ void LoadAppConfig(const char *filename, AppConfig *config)
     config->show_statistics = false;  // default
     config->highlight_sunlit = false; // default
     config->show_slant_range = false; // default
-    config->show_isl = false; // default
     config->show_scattering = false;  // default
     config->show_skybox = true;       // default
     config->show_ground_coverage = true; // default
@@ -50,6 +49,10 @@ void LoadAppConfig(const char *filename, AppConfig *config)
     config->active_sat_count = 0;
     config->has_saved_selection = false;
     config->tool_settings.count = 0;  // tool-owned settings start empty
+
+    config->is_live = true;
+    config->current_epoch = 19571004.0;
+    config->show_isl = false; // default
 
     // default rotator settings (mirror the static defaults in rotator.cpp)
     {
@@ -176,7 +179,6 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                     config->show_statistics = get_bool("show_statistics", config->show_statistics);
                     config->highlight_sunlit = get_bool("highlight_sunlit", config->highlight_sunlit);
                     config->show_slant_range = get_bool("show_slant_range", config->show_slant_range);
-                    config->show_isl = get_bool("show_isl", config->show_isl);
                     config->show_skybox = get_bool("show_skybox", config->show_skybox);
                     config->show_ground_coverage = get_bool("show_ground_coverage", config->show_ground_coverage);
                     config->show_apsides = get_bool("show_apsides", config->show_apsides);
@@ -189,6 +191,10 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                     config->show_first_run_dialog = get_bool("show_first_run_dialog", config->show_first_run_dialog);
                     config->use_local_time = get_bool("use_local_time", config->use_local_time);
                     config->night_mode = get_bool("night_mode", config->night_mode);
+
+                    config->show_isl = get_bool("show_isl", config->show_isl);
+                    config->is_live = get_bool("is_live", config->is_live);
+                    config->current_epoch = get_float("current_epoch", config->current_epoch);
 
                     // load manual orbital data entries
                     auto me = root.find("manual_entries");
@@ -613,7 +619,6 @@ void SaveAppConfig(const char *filename, AppConfig *config)
     root["show_statistics"] = config->show_statistics;
     root["highlight_sunlit"] = config->highlight_sunlit;
     root["show_slant_range"] = config->show_slant_range;
-    root["show_isl"] = config->show_isl;
     root["show_scattering"] = config->show_scattering;
     root["show_skybox"] = config->show_skybox;
     root["show_ground_coverage"] = config->show_ground_coverage;
@@ -629,6 +634,10 @@ void SaveAppConfig(const char *filename, AppConfig *config)
     root["first_day_of_week"] = config->first_day_of_week;
     root["data_stale_threshold_seconds"] = config->data_stale_threshold_seconds;
     root["network_timeout_seconds"] = config->network_timeout_seconds;
+
+    root["show_isl"] = config->show_isl;
+    root["is_live"] = config->is_live;
+    root["current_epoch"] = config->current_epoch;
 
     if (config->custom_data_source_count > 0)
     {
