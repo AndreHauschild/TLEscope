@@ -27,6 +27,7 @@ void LoadAppConfig(const char *filename, AppConfig *config)
     config->show_statistics = false;  // default
     config->highlight_sunlit = false; // default
     config->show_slant_range = false; // default
+    config->show_isl = false; // default
     config->show_scattering = false;  // default
     config->show_skybox = true;       // default
     config->show_ground_coverage = true; // default
@@ -175,6 +176,7 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                     config->show_statistics = get_bool("show_statistics", config->show_statistics);
                     config->highlight_sunlit = get_bool("highlight_sunlit", config->highlight_sunlit);
                     config->show_slant_range = get_bool("show_slant_range", config->show_slant_range);
+                    config->show_isl = get_bool("show_isl", config->show_isl);
                     config->show_skybox = get_bool("show_skybox", config->show_skybox);
                     config->show_ground_coverage = get_bool("show_ground_coverage", config->show_ground_coverage);
                     config->show_apsides = get_bool("show_apsides", config->show_apsides);
@@ -561,6 +563,7 @@ void LoadAppConfig(const char *filename, AppConfig *config)
         config->show_statistics = false;
         config->highlight_sunlit = false;
         config->show_slant_range = false;
+        config->show_isl = false;
         config->show_scattering = false;
         config->show_skybox = true;
         config->show_ground_coverage = true;
@@ -610,6 +613,7 @@ void SaveAppConfig(const char *filename, AppConfig *config)
     root["show_statistics"] = config->show_statistics;
     root["highlight_sunlit"] = config->highlight_sunlit;
     root["show_slant_range"] = config->show_slant_range;
+    root["show_isl"] = config->show_isl;
     root["show_scattering"] = config->show_scattering;
     root["show_skybox"] = config->show_skybox;
     root["show_ground_coverage"] = config->show_ground_coverage;

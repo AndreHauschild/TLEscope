@@ -177,6 +177,16 @@ void DrawPanelLayers(UIContext *ctx, AppConfig *cfg)
                 cfg->show_slant_range = val;
         }
 
+        /* ISL range */
+        {
+            bool val = cfg->show_isl;
+            bool prev = val;
+            DrawLayerCheckbox("ISL Range", &val, ICON_FA_RULER,
+                              "Show a IL range line from all satellites to active satellite (3D only)");
+            if (val != prev)
+                cfg->show_isl = val;
+        }
+
         ImGui::Unindent();
     }
 
