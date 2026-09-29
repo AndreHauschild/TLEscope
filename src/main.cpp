@@ -702,15 +702,16 @@ int main(void)
     Camera3DParams.fovy = 45.0f;
     Camera3DParams.projection = CAMERA_PERSPECTIVE;
 
+    float map_w = 2048.0f, map_h = 1024.0f;
+
     Camera2D Camera2DParams = {0};
-    Camera2DParams.zoom = 1.0f;
-    Camera2DParams.offset = (Vector2){GetScreenWidth() / 2.0f, GetScreenHeight() / 2.0f};
+    Camera2DParams.zoom = MapFillZoom(map_w, map_h);
+    Camera2DParams.offset = (Vector2){floorf(GetScreenWidth() / 2.0f), floorf(GetScreenHeight() / 2.0f)};
     Camera2DParams.target = (Vector2){0.0f, 0.0f};
 
     float target_camera2d_zoom = Camera2DParams.zoom;
     Vector2 target_camera2d_target = Camera2DParams.target;
-
-    float map_w = 2048.0f, map_h = 1024.0f;
+    float fill_zoom = Camera2DParams.zoom;
     float camDistance = 10.0f, camAngleX = 0.785f, camAngleY = 0.5f;
 
     float target_camDistance = camDistance;
@@ -879,9 +880,19 @@ int main(void)
         bool is_typing = IsUITyping();
         bool over_ui = IsMouseOverUI(&cfg);
 
-        if (is_2d_view && !is_typing)
+        /* Keep the 2D map centered on whole pixels and preserve the user's
+         * relative zoom when the window size changes. Demo Mode owns the
+         * camera while active, so defer viewport adjustment until it exits. */
+        if (!DemoDirectorActive())
         {
-            Camera2DParams.offset = (Vector2){GetScreenWidth() / 2.0f, GetScreenHeight() / 2.0f};
+            Camera2DParams.offset = (Vector2){floorf(GetScreenWidth() / 2.0f), floorf(GetScreenHeight() / 2.0f)};
+            const float new_fill = MapFillZoom(map_w, map_h);
+            if (new_fill != fill_zoom)
+            {
+                target_camera2d_zoom *= new_fill / fill_zoom;
+                Camera2DParams.zoom *= new_fill / fill_zoom;
+                fill_zoom = new_fill;
+            }
         }
 
         /* input handling (skipped while Demo Mode owns the scene) */
@@ -986,7 +997,7 @@ int main(void)
                 target_camDistance = 10.0f;
                 target_camAngleX = 0.785f;
                 target_camAngleY = 0.5f;
-                target_camera2d_zoom = 1.0f;
+                target_camera2d_zoom = fill_zoom;
                 target_camera2d_target = (Vector2){0.0f, 0.0f};
                 Camera3DParams.fovy = 45.0f;
             }
@@ -1209,8 +1220,6 @@ int main(void)
                 if (wheel != 0 && !is_typing)
                 {
                     target_camera2d_zoom += wheel * 0.1f * target_camera2d_zoom;
-                    if (target_camera2d_zoom < 0.1f)
-                        target_camera2d_zoom = 0.1f;
                     active_lock = LOCK_NONE;
                 }
             }
@@ -1479,11 +1488,22 @@ int main(void)
                     target_camera3d_target = draw_moon_pos;
             }
 
+            /* Keep the map covering the viewport and prevent vertical panning
+             * beyond the north/south edges. */
+            if (target_camera2d_zoom < fill_zoom)
+                target_camera2d_zoom = fill_zoom;
+            auto clamp_map_y = [&](float zoom, float y) {
+                const float lim = fmaxf(map_h * 0.5f - GetScreenHeight() / (2.0f * zoom), 0.0f);
+                return Clamp(y, -lim, lim);
+            };
+            target_camera2d_target.y = clamp_map_y(target_camera2d_zoom, target_camera2d_target.y);
+
             float smooth_speed = 10.0f * GetFrameTime();
             if (smooth_speed > 1.0f) smooth_speed = 1.0f; // clamp it so the camera doesnt spin out when alt tabbed
 
             Camera2DParams.zoom = Lerp(Camera2DParams.zoom, target_camera2d_zoom, smooth_speed);
             Camera2DParams.target = Vector2Lerp(Camera2DParams.target, target_camera2d_target, smooth_speed);
+            Camera2DParams.target.y = clamp_map_y(Camera2DParams.zoom, Camera2DParams.target.y);
 
             camAngleX = Lerp(camAngleX, target_camAngleX, smooth_speed);
             camAngleY = Lerp(camAngleY, target_camAngleY, smooth_speed);
@@ -2487,8 +2507,7 @@ int main(void)
                         continue;
                     }
 
-                    /* priority 4: dimmed unselected standard orbit, gated by orbits_dimmed */
-                    if (is_unselected && !orbits_dimmed)
+                    if (&satellites[i] != selected_sat && !orbits_dimmed)
                         continue;
                     draw_orbit_3d(&satellites[i], current_epoch, false, sat_alpha, global_orbit_step, apply_sunlit);
                 }
