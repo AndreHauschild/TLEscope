@@ -21,6 +21,8 @@ static void copy_str(char *dst, size_t dst_size, const std::string &src)
 // read the json file and grab our settings
 void LoadAppConfig(const char *filename, AppConfig *config)
 {
+    bool layout_migrated = false;
+
     // default theme configuration
     strcpy(config->theme, "default");
     config->show_markers = true;      // default
@@ -32,8 +34,8 @@ void LoadAppConfig(const char *filename, AppConfig *config)
     config->show_ground_coverage = true; // default
     config->show_apsides = true;      // default
     config->show_earth_texture = true;  // default
-    config->show_latlon_grid = false;   // default
-    config->show_country_borders = false; // default
+    config->show_latlon_grid = true;    // default
+    config->show_country_borders = true;  // default
     config->show_coast_lines = true;   // default
     config->show_first_run_dialog = false; // default
     config->hint_vsync = true;       // default
@@ -444,6 +446,28 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                             L->left_restore_width = get_val("left_restore_width", L->left_restore_width);
                             L->right_restore_width = get_val("right_restore_width", L->right_restore_width);
 
+                            /* One-time migration: older settings.json stored the
+                             * sidebar widths in absolute (already ui_scale-scaled)
+                             * pixels. The layout now stores them in base units and
+                             * multiplies by ui_scale at use, so divide the stored
+                             * values by the current ui_scale to preserve the
+                             * on-screen width. The "widths_logical" marker records
+                             * that the file has already been migrated. */
+                            bool widths_logical = false;
+                            auto wl = ul->find("widths_logical");
+                            if (wl != ul->end() && wl->is_boolean())
+                                widths_logical = wl->get<bool>();
+                            if (!widths_logical)
+                            {
+                                float s = config->ui_scale;
+                                if (s < 0.5f) s = 0.5f;
+                                L->left_sidebar_width  /= s;
+                                L->right_sidebar_width /= s;
+                                L->left_restore_width  /= s;
+                                L->right_restore_width /= s;
+                                layout_migrated = true;
+                            }
+
                             auto read_int_array = [&ul](const char *key, int *dst) {
                                 auto it = ul->find(key);
                                 if (it == ul->end() || !it->is_array())
@@ -575,8 +599,8 @@ void LoadAppConfig(const char *filename, AppConfig *config)
         config->show_ground_coverage = true;
         config->show_apsides = true;
         config->show_earth_texture = true;
-        config->show_latlon_grid = false;
-        config->show_country_borders = false;
+        config->show_latlon_grid = true;
+        config->show_country_borders = true;
         config->show_coast_lines = true;
         config->hint_vsync = true;
         config->night_mode = false;
@@ -590,6 +614,10 @@ void LoadAppConfig(const char *filename, AppConfig *config)
 
         SaveAppConfig(filename, config);
     }
+
+    /* persist the one-time width-unit migration so it never runs twice */
+    if (layout_migrated)
+        SaveAppConfig(filename, config);
 
     TLEscopeSetCurlTimeoutSeconds(config->network_timeout_seconds);
 
@@ -720,6 +748,8 @@ void SaveAppConfig(const char *filename, AppConfig *config)
         ul["right_sidebar_hidden"] = L->right_sidebar_hidden;
         ul["left_restore_width"] = L->left_restore_width;
         ul["right_restore_width"] = L->right_restore_width;
+        /* marker: sidebar widths are stored in base (ui_scale == 1) units */
+        ul["widths_logical"] = true;
 
         nlohmann::json left_order = nlohmann::json::array();
         nlohmann::json right_order = nlohmann::json::array();

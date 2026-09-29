@@ -2,7 +2,7 @@ GIT_VERSION     := $(shell scripts/version.sh describe 2>/dev/null || echo "vUnk
 GIT_VERSION_NUM := $(shell scripts/version.sh num 2>/dev/null || echo "0.0.0.0")
 
 CC_LINUX = g++
-CXXFLAGS   = -Wall -Wextra -std=c++20 -O2 -Isrc -Ilib -Ilib/nlohmann/single_include -Ilib/imgui -Ilib/rlImGui -Ilib/rlImGui/extras -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -Wno-sign-compare -Wno-stringop-truncation -Wno-format-truncation -Wno-maybe-uninitialized -Wno-narrowing -Wno-missing-field-initializers -DTLESCOPE_VERSION=\"$(GIT_VERSION)\"
+CXXFLAGS   = -Wall -Wextra -std=c++20 -O2 -Isrc -Ilib -Ilib/nlohmann/single_include -Ilib/imgui -Ilib/rlImGui -Ilib/rlImGui/extras -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -Wno-sign-compare -Wno-stringop-truncation -Wno-format-truncation -Wno-maybe-uninitialized -Wno-narrowing -Wno-missing-field-initializers -DTLESCOPE_VERSION=\"$(GIT_VERSION)\" -DImDrawIdx='unsigned int'
 
 # raylib is built from the git submodule (lib/raylib)
 RAYLIB_SRC   = lib/raylib/src
@@ -50,7 +50,7 @@ endif
 
 # Link against the static raylib built from the submodule, plus per-OS system libs
 LDFLAGS_LIN = $(RAYLIB_LIB) -lcurl -lGL -lX11 -lm -lpthread -ldl -lrt
-LDFLAGS_WIN = $(RAYLIB_LIB) -Wl,-Bstatic $(CURL_FIX) -lssp_nonshared -Wl,-Bdynamic -lzstd -lbcrypt -lsecur32 -liphlpapi -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive,--allow-multiple-definition -lopengl32 -lgdi32 -lwinmm -mwindows $(LDFLAGS_WIN_EXTRA)
+LDFLAGS_WIN = $(RAYLIB_LIB) -Wl,-Bstatic $(CURL_FIX) -lssp_nonshared -Wl,-Bdynamic -lzstd -lbcrypt -lsecur32 -liphlpapi -Wl,-Bstatic -lwinpthread -Wl,--allow-multiple-definition -lopengl32 -lgdi32 -lwinmm -mwindows $(LDFLAGS_WIN_EXTRA)
 DIST_LINUX = dist/TLEscope-Linux-Portable
 DIST_WIN   = dist/TLEscope-Win-Portable
 
@@ -140,17 +140,18 @@ win-installer: windows
 # yes makefile this data copied juuuuuuuust fine and is safe and sound don't worry about it :3
 # microsoft, and I mean this sincerely, please keep bloating windows so that people stop using it and annoying me about it thanks bye.
 
-bin/TLEscope: $(OBJ) | bin
+# depends on the raylib archive so a parallel make cannot link before it exists
+bin/TLEscope: $(OBJ) $(RAYLIB_LIB) | bin
 	@printf "\033[1;35mLinking...\033[0m\n"
-	$(CC_LINUX) $(CXXFLAGS_LIN) -o $@ $^ $(LDFLAGS_LIN)
+	$(CC_LINUX) $(CXXFLAGS_LIN) -o $@ $(OBJ) $(LDFLAGS_LIN)
 	@printf "\033[1;32mBuild complete! \033[0m\033[0;36mTLEscope v$(GIT_VERSION)\033[0m\n"
 
 bin/TLEscope-macos: raylib $(SRC) $(IMGUI_SRC) $(RLIMGUI_SRC) | bin
 	$(CC_MACOS) $(CXXFLAGS) $(RAYLIB_CFLAGS) -o $@ $(filter-out raylib,$^) $(LDFLAGS_MACOS)
 
-bin/TLEscope.exe: $(OBJ_WIN) build_win/versioninfo.o | bin
+bin/TLEscope.exe: $(OBJ_WIN) build_win/versioninfo.o $(RAYLIB_LIB) | bin
 	@printf "\033[1;35mLinking...\033[0m\n"
-	$(CC_WIN) $(CXXFLAGS_WIN) -o $@ $^ $(LDFLAGS_WIN)
+	$(CC_WIN) $(CXXFLAGS_WIN) -o $@ $(OBJ_WIN) build_win/versioninfo.o $(LDFLAGS_WIN)
 	@printf "\033[1;32mBuild complete! \033[0m\033[0;36mTLEscope v$(GIT_VERSION)\033[0m\n"
 
 bin/TLEscope-arm64.exe: $(OBJ_WIN) build_win/versioninfo.o | bin
