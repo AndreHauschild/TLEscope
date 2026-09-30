@@ -632,7 +632,6 @@ static void DrawHelpModal(UIContext *ctx, AppConfig *cfg)
         ImGui::BulletText("Right click: Orbit camera");
         ImGui::Separator();
         ImGui::Text("Keyboard Shortcuts:");
-        ImGui::BulletText("R: Rotator Control");
         ImGui::BulletText("M: Toggle 2D/3D");
         ImGui::BulletText("H: Toggle clean view (hide/show panels)");
         ImGui::Separator();
@@ -1006,7 +1005,9 @@ void DrawGUI(UIContext *ctx, AppConfig *cfg, Font customFont)
      * so show a small banner telling the user how to set / cancel the pick */
     if (*ctx->picking_home)
     {
-        ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f,
+        float vp_x, vp_y, vp_w, vp_h;
+        LayoutGetViewportRect(&vp_x, &vp_y, &vp_w, &vp_h);
+        ImGui::SetNextWindowPos(ImVec2(vp_x + vp_w * 0.5f,
                                        ImGui::GetFrameHeight() + UIPx(14.0f)),
                                 ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowBgAlpha(0.9f);

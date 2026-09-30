@@ -27,6 +27,8 @@
 #include <raylib.h>
 #include <raymath.h>
 
+#include "render/map_view.h"
+
 #include "imgui.h"
 
 #include <vector>
@@ -100,6 +102,7 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
     bool hide_unselected = ctx->hide_unselected ? *ctx->hide_unselected : false;
     bool is_pov = ctx->is_pov_mode ? *ctx->is_pov_mode : false;
     double epoch = ctx->current_epoch ? *ctx->current_epoch : 0.0;
+    double epoch_unix = get_unix_from_epoch(epoch);
 
     Satellite *selected = ctx->selected_sat ? *ctx->selected_sat : NULL;
     Satellite *hovered = ctx->hovered_sat;
@@ -108,13 +111,18 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
     /* screen-space clip rect for the 2D map (labels must stay on the map) */
     ImVec2 clipMin(0.0f, 0.0f);
     ImVec2 clipMax(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
+    int first_copy = 0, last_copy = 0;
     if (is_2d && ctx->camera2d)
     {
         Vector2 m0 = GetWorldToScreen2D((Vector2){-ctx->map_w / 2.0f, -ctx->map_h / 2.0f}, *ctx->camera2d);
         Vector2 m1 = GetWorldToScreen2D((Vector2){ ctx->map_w / 2.0f,  ctx->map_h / 2.0f}, *ctx->camera2d);
-        clipMin = ImVec2(fmaxf(m0.x, 0.0f), fmaxf(m0.y, 0.0f));
-        clipMax = ImVec2(fminf(m1.x, ImGui::GetIO().DisplaySize.x),
-                         fminf(m1.y, ImGui::GetIO().DisplaySize.y));
+        const float vx0 = g_view3d_w > 0.0f ? g_view3d_x : 0.0f;
+        const float vy0 = g_view3d_h > 0.0f ? g_view3d_y : 0.0f;
+        const float vx1 = g_view3d_w > 0.0f ? g_view3d_x + g_view3d_w : ImGui::GetIO().DisplaySize.x;
+        const float vy1 = g_view3d_h > 0.0f ? g_view3d_y + g_view3d_h : ImGui::GetIO().DisplaySize.y;
+        clipMin = ImVec2(vx0, fmaxf(m0.y, vy0));
+        clipMax = ImVec2(vx1, fminf(m1.y, vy1));
+        MapVisibleCopyRange(*ctx->camera2d, ctx->map_w, &first_copy, &last_copy);
     }
 
     /* the 2D map wraps horizontally; pick the on-screen copy of a map point */
@@ -123,7 +131,7 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
         float screen_cx = (clipMin.x + clipMax.x) * 0.5f;
         bool found = false;
         float best_dist = 0.0f;
-        for (int off = -1; off <= 1; off++)
+        for (int off = first_copy; off <= last_copy; off++)
         {
             Vector2 sp = GetWorldToScreen2D((Vector2){mx + off * ctx->map_w, my}, *ctx->camera2d);
             if (sp.x >= clipMin.x && sp.x <= clipMax.x)
@@ -181,7 +189,7 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
             float draw_earth_radius = EARTH_RADIUS_KM / DRAW_SCALE;
             if (Vector3DotProduct(toTarget, camForward) <= 0.0f) continue;
             if (IsOccludedByEarth(ctx->camera3d->position, draw_pos, draw_earth_radius)) continue;
-            Vector2 sp = GetWorldToScreen(draw_pos, *ctx->camera3d);
+            Vector2 sp = WorldToScreenViewport3D(draw_pos, *ctx->camera3d);
             anchor = ImVec2(sp.x + icon_half + pad, sp.y - icon_half);
         }
 
@@ -208,7 +216,7 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
         cands.push_back(c);
     }
 
-    /* ---- apsis labels (active sat) ---- */
+    // apsis labels (active sat)
     if (cfg->show_apsides && active && active->is_active)
     {
         bool is_unselected = (selected != NULL && active != selected);
@@ -224,9 +232,9 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
                 float draw_earth_radius = EARTH_RADIUS_KM / DRAW_SCALE;
                 if (!IsOccludedByEarth(ctx->camera3d->position, draw_p, draw_earth_radius))
                 {
-                    Vector2 sp = GetWorldToScreen(draw_p, *ctx->camera3d);
+                    Vector2 sp = WorldToScreenViewport3D(draw_p, *ctx->camera3d);
                     LabelCandidate c;
-                    snprintf(c.text, sizeof(c.text), "P %.0f km", calc_perigee_km(active));
+                    snprintf(c.text, sizeof(c.text), "P %.0f km", calc_perigee_km(active, epoch_unix));
                     c.anchor = ImVec2(sp.x + 16.0f * ui_scale + pad, sp.y - 16.0f * ui_scale);
                     c.color = ToImU32(g_theme.world.periapsis);
                     c.priority = 5;
@@ -236,9 +244,9 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
                 }
                 if (!IsOccludedByEarth(ctx->camera3d->position, draw_a, draw_earth_radius))
                 {
-                    Vector2 sp = GetWorldToScreen(draw_a, *ctx->camera3d);
+                    Vector2 sp = WorldToScreenViewport3D(draw_a, *ctx->camera3d);
                     LabelCandidate c;
-                    snprintf(c.text, sizeof(c.text), "A %.0f km", calc_apogee_km(active));
+                    snprintf(c.text, sizeof(c.text), "A %.0f km", calc_apogee_km(active, epoch_unix));
                     c.anchor = ImVec2(sp.x + 16.0f * ui_scale + pad, sp.y - 16.0f * ui_scale);
                     c.color = ToImU32(g_theme.world.apoapsis);
                     c.priority = 5;
@@ -258,7 +266,7 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
                 Vector2 sp_a = GetWorldToScreen2D(apo2d, *ctx->camera2d);
 
                 LabelCandidate c;
-                snprintf(c.text, sizeof(c.text), "P %.0f km", calc_perigee_km(active));
+                snprintf(c.text, sizeof(c.text), "P %.0f km", calc_perigee_km(active, epoch_unix));
                 c.anchor = ImVec2(sp_p.x + 16.0f * ui_scale + pad, sp_p.y - 16.0f * ui_scale);
                 c.color = ToImU32(g_theme.world.periapsis);
                 c.priority = 5;
@@ -266,7 +274,7 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
                 c.centered = false;
                 cands.push_back(c);
 
-                snprintf(c.text, sizeof(c.text), "A %.0f km", calc_apogee_km(active));
+                snprintf(c.text, sizeof(c.text), "A %.0f km", calc_apogee_km(active, epoch_unix));
                 c.anchor = ImVec2(sp_a.x + 16.0f * ui_scale + pad, sp_a.y - 16.0f * ui_scale);
                 c.color = ToImU32(g_theme.world.apoapsis);
                 c.priority = 5;
@@ -314,7 +322,7 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
                 if (Vector3DotProduct(h_normal, h_viewDir) > 0.0f &&
                     Vector3DotProduct(h_toTarget, camForward) > 0.0f)
                 {
-                    Vector2 sp = GetWorldToScreen(h_pos, *ctx->camera3d);
+                    Vector2 sp = WorldToScreenViewport3D(h_pos, *ctx->camera3d);
                     c.anchor = ImVec2(sp.x + icon_half + pad, sp.y - icon_half);
                     cands.push_back(c);
                 }
@@ -355,7 +363,7 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
                 if (Vector3DotProduct(normal, viewDir) > 0.0f &&
                     Vector3DotProduct(toTarget, camForward) > 0.0f)
                 {
-                    Vector2 sp = GetWorldToScreen(m_pos, *ctx->camera3d);
+                    Vector2 sp = WorldToScreenViewport3D(m_pos, *ctx->camera3d);
                     c.anchor = ImVec2(sp.x + icon_half + pad, sp.y - icon_half);
                     cands.push_back(c);
                 }
@@ -406,7 +414,7 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
                 Vector3 camForward = Vector3Normalize(Vector3Subtract(ctx->camera3d->target, ctx->camera3d->position));
                 if (Vector3DotProduct(Vector3Normalize(toMid), camForward) > 0.0f)
                 {
-                    Vector2 sp = GetWorldToScreen(mid_pos, *ctx->camera3d);
+                    Vector2 sp = WorldToScreenViewport3D(mid_pos, *ctx->camera3d);
                     c.anchor = ImVec2(sp.x, sp.y);
                     cands.push_back(c);
                 }

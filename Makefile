@@ -11,8 +11,8 @@ RAYLIB_CFLAGS = -I$(RAYLIB_SRC)
 # Extra args passed to raylib's own Makefile (for example CC=... PLATFORM_OS=WINDOWS for cross-compiles)
 RAYLIB_MAKE_ARGS ?=
 
-CXXFLAGS_LIN = $(CXXFLAGS) $(RAYLIB_CFLAGS)
-CXXFLAGS_WIN = $(CXXFLAGS) $(RAYLIB_CFLAGS) -DCURL_STATICLIB -static-libgcc -fno-stack-protector
+CXXFLAGS_LIN = $(CXXFLAGS) $(RAYLIB_CFLAGS) -MMD -MP
+CXXFLAGS_WIN = $(CXXFLAGS) $(RAYLIB_CFLAGS) -MMD -MP -DCURL_STATICLIB -static-libgcc -fno-stack-protector
 
 LDFLAGS_WIN_EXTRA =
 
@@ -63,7 +63,7 @@ CC_MACOS = clang++
 LDFLAGS_MACOS = $(RAYLIB_LIB) -lcurl -framework OpenGL -framework Cocoa -framework IOKit -framework CoreAudio -framework CoreVideo -framework QuartzCore
 DIST_MACOS = dist/TLEscope-macOS-Portable
 
-SRC          = src/main.cpp src/core/astro.cpp src/core/config.cpp src/core/theme.cpp src/core/location.cpp src/data/storage.cpp src/data/provider.cpp src/data/cache.cpp src/data/omm_parser.cpp src/data/async_fetch.cpp src/ui/ui.cpp src/ui/ui_layout.cpp src/ui/labels.cpp src/ui/imgui_theme.cpp src/ui/notifications.cpp src/ui/touch_gesture.cpp src/io/rotator.cpp src/util/c23_compat.cpp src/util/log.cpp src/render/coverage_mesh.cpp src/demo/demo_director.cpp src/ui/tools/tools_registry.cpp src/ui/tools/tools_common.cpp src/ui/tools/tools_settings.cpp src/ui/tools/tools_scene.cpp $(wildcard src/ui/tools/tool_*.cpp)
+SRC          = src/main.cpp src/core/astro.cpp src/core/propagator.cpp src/core/config.cpp src/core/theme.cpp src/core/location.cpp src/data/storage.cpp src/data/provider.cpp src/data/cache.cpp src/data/omm_parser.cpp src/data/async_fetch.cpp src/ui/ui.cpp src/ui/ui_layout.cpp src/ui/labels.cpp src/ui/imgui_theme.cpp src/ui/notifications.cpp src/ui/touch_gesture.cpp src/io/rotator.cpp src/util/c23_compat.cpp src/util/log.cpp src/render/coverage_mesh.cpp src/demo/demo_director.cpp src/ui/tools/tools_registry.cpp src/ui/tools/tools_common.cpp src/ui/tools/tools_settings.cpp src/ui/tools/tools_scene.cpp $(wildcard src/ui/tools/tool_*.cpp)
 IMGUI_SRC    = lib/imgui/imgui.cpp lib/imgui/imgui_draw.cpp lib/imgui/imgui_tables.cpp lib/imgui/imgui_widgets.cpp
 RLIMGUI_SRC  = lib/rlImGui/rlImGui.cpp
 OBJ          = $(SRC:src/%.cpp=build/%.o) $(IMGUI_SRC:lib/imgui/%.cpp=build/%.o) $(RLIMGUI_SRC:lib/rlImGui/%.cpp=build/%.o)
@@ -75,7 +75,11 @@ $(shell echo "$(TOTAL_OBJ)" > /tmp/tlescope_build_total; echo "0" > /tmp/tlescop
 TOTAL_WIN_OBJ := $(words $(OBJ_WIN))
 $(shell echo "$(TOTAL_WIN_OBJ)" > /tmp/tlescope_build_total_win; echo "0" > /tmp/tlescope_build_counter_win)
 
-.PHONY: all raylib linux macos windows windows-arm64 win-installer clean build bin install uninstall test
+# auto-generated header dependencies (-MMD): editing a header rebuilds every
+# object that includes it, so a struct change can't leave stale objects behind
+-include $(OBJ:.o=.d) $(OBJ_WIN:.o=.d)
+
+.PHONY: all raylib clean-libs linux macos windows windows-arm64 win-installer clean build bin install uninstall test
 
 all: linux
 
@@ -91,6 +95,13 @@ $(RAYLIB_LIB):
 	@printf "\033[1;35mBuilding raylib (static)...\033[0m\n"
 	$(MAKE) -C $(RAYLIB_SRC) $(RAYLIB_MAKE_ARGS)
 	@printf "\033[1;32mraylib built: $(RAYLIB_LIB)\033[0m\n"
+
+# Clean bundled library build artifacts (raylib). Use when switching
+# platforms/toolchains so a stale libraylib.a isn't reused.
+clean-libs:
+	rm -f $(RAYLIB_SRC)/*.o
+	rm -f $(RAYLIB_LIB) $(RAYLIB_SRC)/libraylib.web.a $(RAYLIB_SRC)/libraylib.so*
+	rm -f $(RAYLIB_SRC)/raygui.c $(RAYLIB_SRC)/*-protocol.h $(RAYLIB_SRC)/*-protocol-code.h $(RAYLIB_SRC)/*-protocol-code.c
 
 linux: raylib bin/TLEscope
 	@mkdir -p $(DIST_LINUX)

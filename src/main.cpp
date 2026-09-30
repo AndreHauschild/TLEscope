@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "core/astro.h"
+#include "core/propagator.h"
 #include "core/config.h"
 #include "core/theme.h"
 #include "core/location.h"
@@ -386,7 +387,7 @@ static bool GetMouseEarthIntersection(Vector2 mouse, bool is_2d, Camera2D cam2d,
     }
     else
     {
-        Ray ray = GetScreenToWorldRay(mouse, cam3d);
+        Ray ray = ScreenToWorldRayViewport3D(mouse, cam3d);
         float earthRadius = EARTH_RADIUS_KM / DRAW_SCALE;
         RayCollision col = GetRayCollisionSphere(ray, (Vector3){0, 0, 0}, earthRadius);
         if (col.hit)
@@ -409,6 +410,62 @@ static bool GetMouseEarthIntersection(Vector2 mouse, bool is_2d, Camera2D cam2d,
         }
         return false;
     }
+}
+
+static Satellite *FindSatByNorad(uint32_t norad)
+{
+    if (norad == 0)
+        return NULL;
+    for (int i = 0; i < sat_count; i++)
+    {
+        if (satellites[i].norad_id_num == norad && satellites[i].is_active)
+            return &satellites[i];
+    }
+    return NULL;
+}
+
+static void StartTrackingSat(TargetLock *lock, Satellite **sat, uint32_t *norad, Satellite *target)
+{
+    *lock = LOCK_SAT;
+    *sat = target;
+    *norad = target->norad_id_num;
+    NotifyPush(NOTIFY_INFO, ICON_FA_SATELLITE, "Currently Tracking: %s", target->name);
+}
+
+static void StartTrackingBody(TargetLock *lock, Satellite **sat, uint32_t *norad, TargetLock kind)
+{
+    *lock = kind;
+    *sat = NULL;
+    *norad = 0;
+    if (kind == LOCK_MOON)
+        NotifyPush(NOTIFY_INFO, ICON_FA_MOON, "Currently Tracking: Moon");
+    else
+        NotifyPush(NOTIFY_INFO, ICON_FA_GLOBE, "Currently Tracking: Earth");
+}
+
+/** user-initiated stop (pan / empty-space double-click); toasts only if tracking */
+static void StopTrackingUser(TargetLock *lock, Satellite **sat, uint32_t *norad)
+{
+    if (*lock == LOCK_NONE)
+        return;
+    *lock = LOCK_NONE;
+    *sat = NULL;
+    *norad = 0;
+    NotifyPush(NOTIFY_INFO, ICON_FA_CROSSHAIRS, "Tracking stopped");
+}
+
+/** target lost (decay / NaN / data reload); toasts the lost name if known */
+static void StopTrackingLost(TargetLock *lock, Satellite **sat, uint32_t *norad, const char *name)
+{
+    if (*lock == LOCK_NONE)
+        return;
+    *lock = LOCK_NONE;
+    *sat = NULL;
+    *norad = 0;
+    if (name && name[0])
+        NotifyPush(NOTIFY_WARNING, ICON_FA_CROSSHAIRS, "Tracking stopped: %s lost", name);
+    else
+        NotifyPush(NOTIFY_INFO, ICON_FA_CROSSHAIRS, "Tracking stopped");
 }
 
 /* Check for Earth masking
@@ -471,6 +528,7 @@ int main(void)
 
     LoadAppConfig("settings.json", &cfg);
     SetUseLocalTime(cfg.use_local_time);
+    sat_prop_set_short_period(cfg.prop_use_short_period);
     RotatorLoadSettings(&cfg); /* restore persisted rotator config */
     NotifyLoadSettings(&cfg);  /* restore persisted notification toggles */
 
@@ -719,6 +777,13 @@ int main(void)
     float target_camAngleY = camAngleY;
     Vector3 target_camera3d_target = Camera3DParams.target;
 
+    /* accumulated Earth->body radial azimuth for co-rotating the orbit offset */
+    float track_follow_angle = 0.0f;
+    bool track_follow_valid = false;
+    float track_follow_last_phi = 0.0f;
+    TargetLock track_follow_lock = LOCK_NONE;
+    Satellite *track_follow_sat = NULL;
+
     double current_epoch = (cfg.is_live? get_current_real_time_epoch() : cfg.current_epoch);
     double time_multiplier = 1.0;
     double saved_multiplier = 1.0;
@@ -744,6 +809,8 @@ int main(void)
     Satellite *hovered_sat = NULL;
     Satellite *selected_sat = NULL;
     TargetLock active_lock = LOCK_EARTH;
+    Satellite *tracked_sat = NULL;
+    uint32_t tracked_norad = 0;
     double last_left_click_time = 0.0;
     Vector2 left_press_pos = {0};
     bool left_press_over_ui = false;
@@ -872,6 +939,14 @@ int main(void)
             DemoDirectorRequestStop();
         DemoDirectorUpdate(&demo_ctx, GetFrameTime());
 
+        /* demo mode owns the camera; tracking is not applicable and must not toast */
+        if (DemoDirectorActive())
+        {
+            active_lock = LOCK_NONE;
+            tracked_sat = NULL;
+            tracked_norad = 0;
+        }
+
         /* 3-finger double-tap toggles clean view (identical to pressing H).
          * Consumed unconditionally so it works even while a text field is focused. */
         if (TouchGestureConsumeThreeFingerDoubleTap())
@@ -880,13 +955,18 @@ int main(void)
         bool is_typing = IsUITyping();
         bool over_ui = IsMouseOverUI(&cfg);
 
+        float vp_x, vp_y, vp_w, vp_h;
+        LayoutGetViewportRect(&vp_x, &vp_y, &vp_w, &vp_h);
+
+        Viewport3DSetRect(vp_x, vp_y, vp_w, vp_h);
+
         /* Keep the 2D map centered on whole pixels and preserve the user's
          * relative zoom when the window size changes. Demo Mode owns the
          * camera while active, so defer viewport adjustment until it exits. */
         if (!DemoDirectorActive())
         {
-            Camera2DParams.offset = (Vector2){floorf(GetScreenWidth() / 2.0f), floorf(GetScreenHeight() / 2.0f)};
-            const float new_fill = MapFillZoom(map_w, map_h);
+            Camera2DParams.offset = (Vector2){floorf(vp_x + vp_w * 0.5f), floorf(vp_y + vp_h * 0.5f)};
+            const float new_fill = MapFillZoomFor(map_w, map_h, vp_w, vp_h);
             if (new_fill != fill_zoom)
             {
                 target_camera2d_zoom *= new_fill / fill_zoom;
@@ -894,6 +974,9 @@ int main(void)
                 fill_zoom = new_fill;
             }
         }
+
+        /* remember the scale so the +/- keybind can toast only on a real change */
+        const float prev_ui_scale = cfg.ui_scale;
 
         /* input handling (skipped while Demo Mode owns the scene) */
         if (!is_typing && !DemoDirectorActive())
@@ -993,13 +1076,42 @@ int main(void)
 
             if (IsKeyPressed(KEY_HOME))
             {
-                active_lock = LOCK_EARTH;
                 target_camDistance = 10.0f;
                 target_camAngleX = 0.785f;
                 target_camAngleY = 0.5f;
-                target_camera2d_zoom = fill_zoom;
-                target_camera2d_target = (Vector2){0.0f, 0.0f};
                 Camera3DParams.fovy = 45.0f;
+
+                if (is_2d_view)
+                {
+                    active_lock = LOCK_NONE;
+                    tracked_sat = NULL;
+                    tracked_norad = 0;
+
+                    Location *home = GetHomeLocation();
+                    if (home)
+                    {
+                        const float home_x = (home->lon / 360.0f) * map_w;
+                        const float home_y = -(home->lat / 180.0f) * map_h;
+
+                        /* Zoom only as far as needed to put home at the scene
+                         * centre without exposing space beyond the map poles. */
+                        const float vertical_room = map_h - 2.0f * fabsf(home_y);
+                        const float home_zoom = vertical_room > 0.0f
+                            ? vp_h / vertical_room
+                            : fill_zoom;
+                        target_camera2d_zoom = fmaxf(fill_zoom, home_zoom);
+                        target_camera2d_target = (Vector2){home_x, home_y};
+                    }
+                    else
+                    {
+                        target_camera2d_zoom = fill_zoom;
+                        target_camera2d_target = Vector2Zero();
+                    }
+                }
+                else
+                {
+                    StartTrackingBody(&active_lock, &tracked_sat, &tracked_norad, LOCK_EARTH);
+                }
             }
 
             if (IsKeyPressed(KEY_SLASH))
@@ -1033,17 +1145,11 @@ int main(void)
                 LOG_INFO("Fullscreen toggled");
             }
 
-            /* panel toggle shortcuts */
-            if (IsKeyPressed(KEY_ONE))   LayoutTogglePanel(PANEL_SAT_MGR);
-            if (IsKeyPressed(KEY_TWO))   LayoutTogglePanel(PANEL_DATA_SOURCES);
-            if (IsKeyPressed(KEY_FOUR))  LayoutTogglePanel(PANEL_SCOPE);
-            if (IsKeyPressed(KEY_FIVE))  LayoutTogglePanel(PANEL_PASSES);
-            if (IsKeyPressed(KEY_SIX))   LayoutTogglePanel(PANEL_POLAR_PLOT);
-            if (IsKeyPressed(KEY_SEVEN)) LayoutTogglePanel(PANEL_DOPPLER);
-            if (IsKeyPressed(KEY_EIGHT)) LayoutTogglePanel(PANEL_ROTATOR);
-            if (IsKeyPressed(KEY_NINE))  LayoutTogglePanel(PANEL_LOG);
-            if (IsKeyPressed(KEY_ZERO))  LayoutTogglePanel(PANEL_SAT_INFO);
-            if (IsKeyPressed(KEY_R))     LayoutTogglePanel(PANEL_ROTATOR);
+            /* sidebar show/hide shortcuts */
+            if (IsKeyPressed(KEY_ONE))
+                LayoutSetSidebarVisible(SIDEBAR_LEFT, !LayoutSidebarVisible(SIDEBAR_LEFT));
+            if (IsKeyPressed(KEY_TWO))
+                LayoutSetSidebarVisible(SIDEBAR_RIGHT, !LayoutSidebarVisible(SIDEBAR_RIGHT));
 
             /* cancel home-location picking without changing the location */
             if (IsKeyPressed(KEY_ESCAPE) && picking_home)
@@ -1063,6 +1169,9 @@ int main(void)
             cfg.ui_scale = 0.5f;
         if (cfg.ui_scale > 4.0f)
             cfg.ui_scale = 4.0f;
+
+        if (cfg.ui_scale != prev_ui_scale)
+            NotifyPush(NOTIFY_INFO, ICON_FA_MAGNIFYING_GLASS, "UI scale: %.0f%%", cfg.ui_scale * 100.0f);
 
         /* time warp logic for jumping to specific dates */
         UpdateAutoWarpState(&is_auto_warping, &auto_warp_target, &auto_warp_initial_diff, &current_epoch, &time_multiplier, &saved_multiplier);
@@ -1111,6 +1220,8 @@ int main(void)
                 satellites[i].is_active = false;
                 if (selected_sat == &satellites[i])
                     selected_sat = NULL;
+                if (active_lock == LOCK_SAT && tracked_sat == &satellites[i])
+                    StopTrackingLost(&active_lock, &tracked_sat, &tracked_norad, satellites[i].name);
                 continue;
             }
 
@@ -1122,6 +1233,8 @@ int main(void)
                 satellites[i].is_active = false;
                 if (selected_sat == &satellites[i])
                     selected_sat = NULL;
+                if (active_lock == LOCK_SAT && tracked_sat == &satellites[i])
+                    StopTrackingLost(&active_lock, &tracked_sat, &tracked_norad, satellites[i].name);
                 continue;
             }
 
@@ -1214,13 +1327,12 @@ int main(void)
                 if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT) || left_dragging || (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) && IsKeyDown(KEY_LEFT_SHIFT)))
                 {
                     target_camera2d_target = Vector2Add(target_camera2d_target, Vector2Scale(mouseDelta, -1.0f / target_camera2d_zoom));
-                    active_lock = LOCK_NONE;
+                    StopTrackingUser(&active_lock, &tracked_sat, &tracked_norad);
                 }
                 float wheel = GetMouseWheelMove();
                 if (wheel != 0 && !is_typing)
                 {
                     target_camera2d_zoom += wheel * 0.1f * target_camera2d_zoom;
-                    active_lock = LOCK_NONE;
                 }
             }
 
@@ -1232,7 +1344,7 @@ int main(void)
                 if (IsKeyDown(KEY_LEFT)) { target_camera2d_target.x -= pan_speed; moved = true; }
                 if (IsKeyDown(KEY_DOWN)) { target_camera2d_target.y += pan_speed; moved = true; }
                 if (IsKeyDown(KEY_UP)) { target_camera2d_target.y -= pan_speed; moved = true; }
-                if (moved) active_lock = LOCK_NONE;
+                if (moved) StopTrackingUser(&active_lock, &tracked_sat, &tracked_norad);
             }
 
             if (!over_ui)
@@ -1250,6 +1362,7 @@ int main(void)
 
                     float mx, my;
                     get_map_coordinates(satellites[i].current_pos, gmst_deg, cfg.earth_rotation_offset, map_w, map_h, &mx, &my);
+                    mx += map_w * roundf((Camera2DParams.target.x - mx) / map_w);
 
                     Vector2 screenPos = GetWorldToScreen2D((Vector2){mx, my}, Camera2DParams);
                     float dist = Vector2Distance(mousePos, screenPos);
@@ -1277,7 +1390,7 @@ int main(void)
                         float panSpeed = target_camDistance * 0.001f;
                         target_camera3d_target = Vector3Add(target_camera3d_target, Vector3Scale(right, -mouseDelta.x * panSpeed));
                         target_camera3d_target = Vector3Add(target_camera3d_target, Vector3Scale(upVector, mouseDelta.y * panSpeed));
-                        active_lock = LOCK_NONE;
+                        StopTrackingUser(&active_lock, &tracked_sat, &tracked_norad);
                     }
                     else
                     {
@@ -1332,13 +1445,12 @@ int main(void)
                 {
                     if (target_camAngleY > 1.57f) target_camAngleY = 1.57f;
                     if (target_camAngleY < -1.57f) target_camAngleY = -1.57f;
-                    active_lock = LOCK_NONE;
                 }
             }
 
             if (!over_ui)
             {
-                Ray mouseRay = GetScreenToWorldRay(GetMousePosition(), Camera3DParams);
+                Ray mouseRay = ScreenToWorldRayViewport3D(GetMousePosition(), Camera3DParams);
                 float closest_dist = 9999.0f;
 
                 for (int i = 0; i < sat_count; i++)
@@ -1421,47 +1533,58 @@ int main(void)
                     double current_time = GetTime();
                     bool is_double_click = (current_time - last_left_click_time < 0.3);
 
-                    if (hovered_sat != NULL)
+                    if (is_double_click)
+                    {
+                        /* double-click selects the satellite under the cursor, or clears on empty space */
+                        selected_sat = hovered_sat;
+                    }
+                    else if (hovered_sat != NULL)
                     {
                         /* re-tap the already-selected satellite toggles it off */
                         selected_sat = (selected_sat == hovered_sat) ? NULL : hovered_sat;
                     }
-                    else
-                    {
-                        /* a single clean click/tap on empty space deselects */
-                        selected_sat = NULL;
-                    }
 
                     if (is_double_click)
                     {
-                        // double-click lock logic (unchanged)
-                        if (is_2d_view)
+                        /* double-click a satellite to track it (independent of selection) */
+                        if (hovered_sat != NULL)
                         {
-                            Vector2 mouseWorld = GetScreenToWorld2D(GetMousePosition(), Camera2DParams);
-                            bool hit_moon = false;
-                            for (int offset_i = -1; offset_i <= 1; offset_i++)
-                            {
-                                float x_off = offset_i * map_w;
-                                if (Vector2Distance(mouseWorld, (Vector2){moon_mx + x_off, moon_my}) < (15.0f * cfg.ui_scale / Camera2DParams.zoom))
-                                {
-                                    hit_moon = true;
-                                    break;
-                                }
-                            }
-                            active_lock = hit_moon ? LOCK_MOON : LOCK_EARTH;
+                            if (!(active_lock == LOCK_SAT && tracked_sat == hovered_sat))
+                                StartTrackingSat(&active_lock, &tracked_sat, &tracked_norad, hovered_sat);
                         }
                         else
                         {
-                            Ray mouseRay = GetScreenToWorldRay(GetMousePosition(), Camera3DParams);
-                            RayCollision earthCol = GetRayCollisionSphere(mouseRay, Vector3Zero(), draw_earth_radius);
-                            RayCollision moonCol = GetRayCollisionSphere(mouseRay, draw_moon_pos, draw_moon_radius);
-                            if (moonCol.hit && (!earthCol.hit || moonCol.distance < earthCol.distance))
+                            TargetLock resolved = LOCK_NONE;
+                            if (is_2d_view)
                             {
-                                active_lock = LOCK_MOON;
+                                Vector2 mouseWorld = GetScreenToWorld2D(GetMousePosition(), Camera2DParams);
+                                const float moon_x = moon_mx + map_w * roundf((mouseWorld.x - moon_mx) / map_w);
+                                bool hit_moon = Vector2Distance(mouseWorld, (Vector2){moon_x, moon_my}) <
+                                                (15.0f * cfg.ui_scale / Camera2DParams.zoom);
+                                bool on_map = mouseWorld.y >= -map_h * 0.5f && mouseWorld.y <= map_h * 0.5f;
+                                resolved = hit_moon ? LOCK_MOON : (on_map ? LOCK_EARTH : LOCK_NONE);
                             }
-                            else if (earthCol.hit)
+                            else
                             {
-                                active_lock = LOCK_EARTH;
+                                Ray mouseRay = ScreenToWorldRayViewport3D(GetMousePosition(), Camera3DParams);
+                                RayCollision earthCol = GetRayCollisionSphere(mouseRay, Vector3Zero(), draw_earth_radius);
+                                RayCollision moonCol = GetRayCollisionSphere(mouseRay, draw_moon_pos, draw_moon_radius);
+                                if (moonCol.hit && (!earthCol.hit || moonCol.distance < earthCol.distance))
+                                    resolved = LOCK_MOON;
+                                else if (earthCol.hit)
+                                    resolved = LOCK_EARTH;
+                                else
+                                    resolved = LOCK_NONE;
+                            }
+
+                            if (resolved != active_lock)
+                            {
+                                if (resolved == LOCK_MOON)
+                                    StartTrackingBody(&active_lock, &tracked_sat, &tracked_norad, LOCK_MOON);
+                                else if (resolved == LOCK_EARTH)
+                                    StartTrackingBody(&active_lock, &tracked_sat, &tracked_norad, LOCK_EARTH);
+                                else
+                                    StopTrackingUser(&active_lock, &tracked_sat, &tracked_norad);
                             }
                         }
                     }
@@ -1487,13 +1610,47 @@ int main(void)
                 else
                     target_camera3d_target = draw_moon_pos;
             }
+            else if (active_lock == LOCK_SAT)
+            {
+                char lost_name[32];
+                lost_name[0] = '\0';
+                if (tracked_sat != NULL)
+                    snprintf(lost_name, sizeof(lost_name), "%s", tracked_sat->name);
+
+                /* a data reload can recycle the array; re-find the sat by NORAD */
+                if (tracked_sat == NULL || !tracked_sat->is_active)
+                    tracked_sat = FindSatByNorad(tracked_norad);
+
+                if (tracked_sat == NULL)
+                {
+                    StopTrackingLost(&active_lock, &tracked_sat, &tracked_norad, lost_name);
+                }
+                else if (is_2d_view)
+                {
+                    float sat_mx, sat_my;
+                    get_map_coordinates(tracked_sat->current_pos, gmst_deg, cfg.earth_rotation_offset, map_w, map_h, &sat_mx, &sat_my);
+                    target_camera2d_target = (Vector2){sat_mx, sat_my};
+                }
+                else
+                {
+                    target_camera3d_target = Vector3Scale(tracked_sat->current_pos, 1.0f / DRAW_SCALE);
+                }
+            }
+
+            /* Keep the horizontal target on the nearest map copy so panning can
+             * cross the antimeridian without the interpolation jumping a seam. */
+            {
+                const float shift = -map_w * floorf((target_camera2d_target.x + map_w * 0.5f) / map_w);
+                target_camera2d_target.x += shift;
+                Camera2DParams.target.x += shift;
+            }
 
             /* Keep the map covering the viewport and prevent vertical panning
              * beyond the north/south edges. */
-            if (target_camera2d_zoom < fill_zoom)
+            if (cfg.limit_map_zoomout && target_camera2d_zoom < fill_zoom)
                 target_camera2d_zoom = fill_zoom;
             auto clamp_map_y = [&](float zoom, float y) {
-                const float lim = fmaxf(map_h * 0.5f - GetScreenHeight() / (2.0f * zoom), 0.0f);
+                const float lim = fmaxf(map_h * 0.5f - vp_h / (2.0f * zoom), 0.0f);
                 return Clamp(y, -lim, lim);
             };
             target_camera2d_target.y = clamp_map_y(target_camera2d_zoom, target_camera2d_target.y);
@@ -1502,16 +1659,64 @@ int main(void)
             if (smooth_speed > 1.0f) smooth_speed = 1.0f; // clamp it so the camera doesnt spin out when alt tabbed
 
             Camera2DParams.zoom = Lerp(Camera2DParams.zoom, target_camera2d_zoom, smooth_speed);
-            Camera2DParams.target = Vector2Lerp(Camera2DParams.target, target_camera2d_target, smooth_speed);
-            Camera2DParams.target.y = clamp_map_y(Camera2DParams.zoom, Camera2DParams.target.y);
 
             camAngleX = Lerp(camAngleX, target_camAngleX, smooth_speed);
             camAngleY = Lerp(camAngleY, target_camAngleY, smooth_speed);
             camDistance = Lerp(camDistance, target_camDistance, smooth_speed);
-            Camera3DParams.target = Vector3Lerp(Camera3DParams.target, target_camera3d_target, smooth_speed);
+
+            /* follow tracked targets rigidly: lerp lag grows with the time multiplier */
+            if (active_lock != LOCK_NONE)
+            {
+                Camera2DParams.target = target_camera2d_target;
+                Camera3DParams.target = target_camera3d_target;
+            }
+            else
+            {
+                Camera2DParams.target = Vector2Lerp(Camera2DParams.target, target_camera2d_target, smooth_speed);
+                Camera3DParams.target = Vector3Lerp(Camera3DParams.target, target_camera3d_target, smooth_speed);
+            }
+            Camera2DParams.target.y = clamp_map_y(Camera2DParams.zoom, Camera2DParams.target.y);
 
             float target_ecliptic_angle = is_ecliptic_frame ? (23.439f * DEG2RAD) : 0.0f;
             current_ecliptic_angle = Lerp(current_ecliptic_angle, target_ecliptic_angle, smooth_speed);
+
+            /* keep Earth framed by co-rotating the orbit offset with the target's azimuth */
+            bool follow_active = !is_2d_view && !is_pov_mode &&
+                                 (active_lock == LOCK_MOON || active_lock == LOCK_SAT);
+            if (follow_active)
+            {
+                if (active_lock != track_follow_lock || tracked_sat != track_follow_sat)
+                {
+                    track_follow_valid = false; /* target changed: re-baseline next frame, no jump */
+                }
+                /* radial from Earth (origin) to the tracked body */
+                Vector3 r = Vector3Normalize(target_camera3d_target);
+                float horiz = sqrtf(r.x * r.x + r.z * r.z);
+                if (horiz > 0.001f) /* azimuth is undefined near the pole: hold */
+                {
+                    float phi = atan2f(r.x, r.z);
+                    if (track_follow_valid)
+                    {
+                        float d = phi - track_follow_last_phi;
+                        while (d > PI) d -= 2.0f * PI;   /* unwrap into (-PI, PI] */
+                        while (d < -PI) d += 2.0f * PI;
+                        track_follow_angle += d;
+                    }
+                    else
+                    {
+                        track_follow_angle = 0.0f;
+                        track_follow_valid = true;
+                    }
+                    track_follow_last_phi = phi;
+                }
+            }
+            else
+            {
+                track_follow_valid = false;
+                track_follow_angle = 0.0f;
+            }
+            track_follow_lock = active_lock;
+            track_follow_sat = tracked_sat;
 
             if (!is_2d_view)
             {
@@ -1520,6 +1725,8 @@ int main(void)
                     camDistance * sinf(camAngleY),
                     camDistance * cosf(camAngleY) * cosf(camAngleX)
                 };
+                if (follow_active && track_follow_valid)
+                    offset = Vector3Transform(offset, MatrixRotateY(track_follow_angle)); /* co-rotate with the body */
                 Vector3 upVec = {0.0f, 1.0f, 0.0f};
 
                 if (current_ecliptic_angle > 0.0001f)
@@ -1530,7 +1737,20 @@ int main(void)
                 }
 
                 Camera3DParams.position = Vector3Add(Camera3DParams.target, offset);
-                Camera3DParams.up = upVec;
+
+                /* world vertical up avoids roll with the target; POV overrides below */
+                if ((active_lock == LOCK_MOON || active_lock == LOCK_SAT) && !is_pov_mode)
+                {
+                    Vector3 world_up = {0.0f, 1.0f, 0.0f};
+                    Vector3 forward = Vector3Normalize(Vector3Subtract(Camera3DParams.target, Camera3DParams.position));
+                    if (fabsf(Vector3DotProduct(forward, world_up)) > 0.9999f)
+                        world_up = (Vector3){0.0f, 0.0f, 1.0f}; /* view parallel to up: stable fallback */
+                    Camera3DParams.up = world_up;
+                }
+                else
+                {
+                    Camera3DParams.up = upVec;
+                }
             }
         }
 
@@ -1543,10 +1763,9 @@ int main(void)
 
             /* create an LVLH local coordinate frame */
             double t_unix = get_unix_from_epoch(current_epoch);
-            Vector3 pos_next_3d = Vector3Scale(calculate_position(selected_sat, t_unix + 1.0), 1.0f / DRAW_SCALE);
+            Vector3 vel = Vector3Normalize(calculate_velocity(selected_sat, t_unix));
 
             Vector3 nadir = Vector3Normalize(Vector3Negate(sat_pos_3d));
-            Vector3 vel = Vector3Normalize(Vector3Subtract(pos_next_3d, sat_pos_3d));
 
             Vector3 right = Vector3Normalize(Vector3CrossProduct(vel, nadir));
             Vector3 fwd = Vector3Normalize(Vector3CrossProduct(nadir, right));
@@ -1583,6 +1802,7 @@ int main(void)
             Camera3DParams.target = Vector3Add(sat_pos_3d, look_dir);
             Camera3DParams.up = upVec;
         }
+
 
 /* maximum cached coverage cap tessellation (matches COVERAGE_LOD_HIGH) */
 #define FP2D_MAX_RINGS 12
@@ -1624,6 +1844,9 @@ int main(void)
         /* 2d projection rendering */
         if (is_2d_view)
         {
+            int first_copy = 0, last_copy = 0;
+            MapVisibleCopyRange(Camera2DParams, map_w, &first_copy, &last_copy);
+
             BeginMapMode2D(Camera2DParams);
             if (show_earth)
             {
@@ -1641,7 +1864,8 @@ int main(void)
                     SetShaderValue(shader2D, moonPosLoc2D, &moonEcef, SHADER_UNIFORM_VEC3);
                 }
 
-                DrawTexturePro(earthTexture, (Rectangle){0, 0, earthTexture.width, earthTexture.height}, (Rectangle){-map_w / 2, -map_h / 2, map_w, map_h}, (Vector2){0, 0}, 0.0f, WHITE);
+                for (int k = first_copy; k <= last_copy; k++)
+                    DrawTexturePro(earthTexture, (Rectangle){0, 0, earthTexture.width, earthTexture.height}, (Rectangle){k * map_w - map_w / 2, -map_h / 2, map_w, map_h}, (Vector2){0, 0}, 0.0f, WHITE);
 
                 if (cfg.show_night_lights)
                     EndShaderMode();
@@ -1649,30 +1873,27 @@ int main(void)
             else
             {
                 /* earth texture disabled: plain black body underneath the overlays */
-                DrawRectangle((int)(-map_w / 2.0f), (int)(-map_h / 2.0f), (int)map_w, (int)map_h, BLACK);
+                for (int k = first_copy; k <= last_copy; k++)
+                    DrawRectangle((int)(k * map_w - map_w / 2.0f), (int)(-map_h / 2.0f), (int)map_w, (int)map_h, BLACK);
             }
 
-            /* scissor mode for map boundaries */
+            /* Horizontal wrapping fills the scene viewport; vertically the map
+             * still ends at the poles. */
             Vector2 mapMin = GetWorldToScreen2D((Vector2){-map_w / 2.0f, -map_h / 2.0f}, Camera2DParams);
             Vector2 mapMax = GetWorldToScreen2D((Vector2){map_w / 2.0f, map_h / 2.0f}, Camera2DParams);
 
-            int sc_x = (int)mapMin.x, sc_y = (int)mapMin.y;
-            int sc_w = (int)(mapMax.x - mapMin.x), sc_h = (int)(mapMax.y - mapMin.y);
+            int vp_ix = (int)vp_x, vp_iy = (int)vp_y;
+            int vp_ix1 = (int)(vp_x + vp_w), vp_iy1 = (int)(vp_y + vp_h);
+            int sc_x = vp_ix, sc_w = vp_ix1 - vp_ix;
+            int sc_y = (int)mapMin.y, sc_h = (int)(mapMax.y - mapMin.y);
 
-            if (sc_x < 0)
+            if (sc_y < vp_iy)
             {
-                sc_w += sc_x;
-                sc_x = 0;
+                sc_h += sc_y - vp_iy;
+                sc_y = vp_iy;
             }
-            if (sc_y < 0)
-            {
-                sc_h += sc_y;
-                sc_y = 0;
-            }
-            if (sc_x + sc_w > GetScreenWidth())
-                sc_w = GetScreenWidth() - sc_x;
-            if (sc_y + sc_h > GetScreenHeight())
-                sc_h = GetScreenHeight() - sc_y;
+            if (sc_y + sc_h > vp_iy1)
+                sc_h = vp_iy1 - sc_y;
 
             if (sc_w > 0 && sc_h > 0)
             {
@@ -1698,11 +1919,11 @@ int main(void)
                     SetShaderValue(g_coverage_shaders.shader2D, g_coverage_shaders.borderColorLoc2D,
                                    &gc_border_2d, SHADER_UNIFORM_VEC4);
 
-                    /* visible map region (camera view ∩ map rect) for culling */
-                    Vector2 vis_a = GetScreenToWorld2D((Vector2){0.0f, 0.0f}, Camera2DParams);
-                    Vector2 vis_b = GetScreenToWorld2D((Vector2){(float)GetScreenWidth(), (float)GetScreenHeight()}, Camera2DParams);
-                    float clip_min_x = fmaxf(fminf(vis_a.x, vis_b.x), -map_w * 0.5f);
-                    float clip_max_x = fminf(fmaxf(vis_a.x, vis_b.x), map_w * 0.5f);
+                    /* visible map region (viewport ∩ map rect) for culling */
+                    Vector2 vis_a = GetScreenToWorld2D((Vector2){vp_x, vp_y}, Camera2DParams);
+                    Vector2 vis_b = GetScreenToWorld2D((Vector2){vp_x + vp_w, vp_y + vp_h}, Camera2DParams);
+                    float clip_min_x = fminf(vis_a.x, vis_b.x);
+                    float clip_max_x = fmaxf(vis_a.x, vis_b.x);
                     float clip_min_y = fmaxf(fminf(vis_a.y, vis_b.y), -map_h * 0.5f);
                     float clip_max_y = fminf(fmaxf(vis_a.y, vis_b.y), map_h * 0.5f);
 
@@ -1735,17 +1956,15 @@ int main(void)
                             float rx = (dlon_max / (2.0f * PI)) * map_w + 1.0f;
                             float ry = (theta / PI) * map_h + 1.0f;
 
-                            /* which of the three map-wrap copies are on screen? */
-                            bool copy_visible[3] = {false, false, false};
                             bool any_visible = false;
-                            for (int oi = -1; oi <= 1; oi++)
+                            for (int oi = first_copy; oi <= last_copy; oi++)
                             {
                                 float x_off = oi * map_w;
                                 if (cx + x_off - rx < clip_max_x && cx + x_off + rx > clip_min_x &&
                                     cy - ry < clip_max_y && cy + ry > clip_min_y)
                                 {
-                                    copy_visible[oi + 1] = true;
                                     any_visible = true;
+                                    break;
                                 }
                             }
                             if (!any_visible)
@@ -1814,12 +2033,9 @@ int main(void)
                                     float qmin_y = fminf(fminf(y1, y2), fminf(y3, y4));
                                     float qmax_y = fmaxf(fmaxf(y1, y2), fmaxf(y3, y4));
 
-                                    for (int oi = 0; oi < 3; oi++)
+                                    for (int oi = first_copy; oi <= last_copy; oi++)
                                     {
-
-                                        if (!copy_visible[oi])
-                                            continue;
-                                        float x_off = (oi - 1) * map_w;
+                                        float x_off = oi * map_w;
                                         if (qmin_x + x_off >= clip_max_x || qmax_x + x_off <= clip_min_x ||
                                             qmin_y >= clip_max_y || qmax_y <= clip_min_y)
                                             continue;
@@ -2070,7 +2286,7 @@ int main(void)
                             }
                         }
 
-                        for (int offset_i = -1; offset_i <= 1; offset_i++)
+                        for (int offset_i = first_copy; offset_i <= last_copy; offset_i++)
                         {
                             float x_off = offset_i * map_w;
                             for (int j = 1; j <= segments; j++)
@@ -2109,7 +2325,7 @@ int main(void)
                     get_map_coordinates(satellites[i].current_pos, gmst_deg, cfg.earth_rotation_offset, map_w, map_h, &sat_mx, &sat_my);
                     if (!(is_pov_mode && &satellites[i] == selected_sat))
                     {
-                        for (int offset_i = -1; offset_i <= 1; offset_i++)
+                        for (int offset_i = first_copy; offset_i <= last_copy; offset_i++)
                         {
                             DrawTexturePro(
                                 satIcon, (Rectangle){0, 0, satIcon.width, satIcon.height}, (Rectangle){sat_mx + (offset_i * map_w), sat_my, m_size_2d, m_size_2d},
@@ -2125,7 +2341,7 @@ int main(void)
                 float hy = home ? -(home->lat / 180.0f) * map_h : 0.0f;
                 if (home && cfg.show_markers)
                 {
-                    for (int offset_i = -1; offset_i <= 1; offset_i++)
+                    for (int offset_i = first_copy; offset_i <= last_copy; offset_i++)
                     {
                         float x_off = offset_i * map_w;
                         DrawTexturePro(
@@ -2145,7 +2361,7 @@ int main(void)
                     else if (hx - sx > map_w / 2.0f)
                         sx += map_w;
 
-                    for (int offset_i = -1; offset_i <= 1; offset_i++)
+                    for (int offset_i = first_copy; offset_i <= last_copy; offset_i++)
                     {
                         float x_off = offset_i * map_w;
                         Vector2 p1 = {hx + x_off, hy};
@@ -2162,7 +2378,7 @@ int main(void)
                             continue; /* home is drawn separately above */
                         float mx = (locations[i].lon / 360.0f) * map_w;
                         float my = -(locations[i].lat / 180.0f) * map_h;
-                        for (int offset_i = -1; offset_i <= 1; offset_i++)
+                        for (int offset_i = first_copy; offset_i <= last_copy; offset_i++)
                         {
                             float x_off = offset_i * map_w;
                             DrawTexturePro(
@@ -2183,7 +2399,7 @@ int main(void)
                 {
                     float mx = (lon / 360.0f) * map_w;
                     float my = -(lat / 180.0f) * map_h;
-                    for (int offset_i = -1; offset_i <= 1; offset_i++)
+                    for (int offset_i = first_copy; offset_i <= last_copy; offset_i++)
                     {
                         float x_off = offset_i * map_w;
                         DrawTexturePro(
@@ -2202,7 +2418,9 @@ int main(void)
         else
         {
             /* 3d globe rendering */
+        Viewport3DApplyGL();
         BeginMode3D(Camera3DParams);
+        Viewport3DFixProjection(Camera3DParams);
 
         if (cfg.show_skybox)
         {
@@ -2632,6 +2850,9 @@ int main(void)
 
             EndMode3D();
 
+
+            Viewport3DResetGL();
+
             /* screen-space icons/text for 3d objects */
             float m_size_3d = 24.0f * cfg.ui_scale;
             float mark_size_3d = 32.0f * cfg.ui_scale;
@@ -2652,7 +2873,7 @@ int main(void)
 
                 if (!IsOccludedByEarth(Camera3DParams.position, draw_p, draw_earth_radius))
                 {
-                    Vector2 sp = GetWorldToScreen(draw_p, Camera3DParams);
+                    Vector2 sp = WorldToScreenViewport3D(draw_p, Camera3DParams);
                     DrawTexturePro(
                         periMark, (Rectangle){0, 0, periMark.width, periMark.height}, (Rectangle){sp.x, sp.y, mark_size_3d, mark_size_3d}, (Vector2){mark_size_3d / 2.f, mark_size_3d / 2.f}, 0.0f,
                         ApplyAlpha(g_theme.world.periapsis, sat_alpha)
@@ -2660,7 +2881,7 @@ int main(void)
                 }
                 if (!IsOccludedByEarth(Camera3DParams.position, draw_a, draw_earth_radius))
                 {
-                    Vector2 sp = GetWorldToScreen(draw_a, Camera3DParams);
+                    Vector2 sp = WorldToScreenViewport3D(draw_a, Camera3DParams);
                     DrawTexturePro(
                         apoMark, (Rectangle){0, 0, apoMark.width, apoMark.height}, (Rectangle){sp.x, sp.y, mark_size_3d, mark_size_3d}, (Vector2){mark_size_3d / 2.f, mark_size_3d / 2.f}, 0.0f,
                         ApplyAlpha(g_theme.world.apoapsis, sat_alpha)
@@ -2686,10 +2907,10 @@ int main(void)
                     {
                         Color sCol = (selected_sat == &satellites[i]) ? g_theme.world.sat_selected : (hovered_sat == &satellites[i]) ? g_theme.world.sat_hover : g_theme.world.sat;
                         sCol = ApplyAlpha(sCol, sat_alpha);
-                        Vector2 sp = GetWorldToScreen(draw_pos, Camera3DParams);
+                        Vector2 sp = WorldToScreenViewport3D(draw_pos, Camera3DParams);
                         /* rotate the icon so its bottom-right corner points toward the earth
                          * (origin) in the current viewport (raylib rotation is in degrees) */
-                        Vector2 earthScreen = GetWorldToScreen(Vector3Zero(), Camera3DParams);
+                        Vector2 earthScreen = WorldToScreenViewport3D(Vector3Zero(), Camera3DParams);
                         float sat_angle = (atan2f(earthScreen.y - sp.y, earthScreen.x - sp.x) * RAD2DEG) - 45.0f;
                         DrawTexturePro(satIcon, (Rectangle){0, 0, satIcon.width, satIcon.height}, (Rectangle){sp.x, sp.y, m_size_3d, m_size_3d}, (Vector2){m_size_3d / 2.f, m_size_3d / 2.f}, sat_angle, sCol);
                     }
@@ -2705,7 +2926,7 @@ int main(void)
             if (cfg.show_markers &&
                 Vector3DotProduct(h_normal, h_viewDir) > 0.0f && Vector3DotProduct(h_toTarget, camForward) > 0.0f)
             {
-                Vector2 sp = GetWorldToScreen(h_pos, Camera3DParams);
+                Vector2 sp = WorldToScreenViewport3D(h_pos, Camera3DParams);
                 DrawTexturePro(
                     markerIcon, (Rectangle){0, 0, markerIcon.width, markerIcon.height}, (Rectangle){sp.x, sp.y, m_size_3d, m_size_3d}, (Vector2){m_size_3d / 2.f, m_size_3d / 2.f}, 0.0f, WHITE
                 );
@@ -2725,7 +2946,7 @@ int main(void)
 
                     if (Vector3DotProduct(normal, viewDir) > 0.0f && Vector3DotProduct(toTarget, camForward) > 0.0f)
                     {
-                        Vector2 sp = GetWorldToScreen(m_pos, Camera3DParams);
+                        Vector2 sp = WorldToScreenViewport3D(m_pos, Camera3DParams);
                         DrawTexturePro(
                             markerIcon, (Rectangle){0, 0, markerIcon.width, markerIcon.height}, (Rectangle){sp.x, sp.y, m_size_3d, m_size_3d}, (Vector2){m_size_3d / 2.f, m_size_3d / 2.f}, 0.0f, WHITE
                         );
@@ -2741,7 +2962,7 @@ int main(void)
                     float lon_rad = (lon + gmst_deg + cfg.earth_rotation_offset) * DEG2RAD;
                     float lat_rad = lat * DEG2RAD;
                     Vector3 pos = {cosf(lat_rad) * cosf(lon_rad) * draw_earth_radius, sinf(lat_rad) * draw_earth_radius, -cosf(lat_rad) * sinf(lon_rad) * draw_earth_radius};
-                    Vector2 sp = GetWorldToScreen(pos, Camera3DParams);
+                    Vector2 sp = WorldToScreenViewport3D(pos, Camera3DParams);
                     DrawTexturePro(
                         markerIcon, (Rectangle){0, 0, markerIcon.width, markerIcon.height}, (Rectangle){sp.x, sp.y, m_size_3d, m_size_3d}, (Vector2){m_size_3d / 2.f, m_size_3d / 2.f}, 0.0f,
                         (Color){0, 255, 255, 255}
@@ -2804,8 +3025,7 @@ int main(void)
             float pad = 8.0f * cfg.ui_scale;
 
             float nav_h = ImGui::GetFrameHeight();
-            float left_edge = g_layout.left_visible ? g_layout.left_width : 0.0f;
-            float x = left_edge + pad;
+            float x = vp_x + pad;
             float y = nav_h + pad;
 
             char fps_str[64];
