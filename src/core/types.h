@@ -348,7 +348,6 @@ typedef struct
     bool limit_map_zoomout;  // cap 2D map zoom-out at the viewport fill level (default true)
     bool highlight_sunlit;
     bool show_slant_range;
-    bool show_isl;
     bool show_scattering;
     bool hint_vsync;
     bool show_skybox;
@@ -363,6 +362,8 @@ typedef struct
     bool use_local_time;   // display dates/times in the system local timezone (default true)
     bool night_mode;       // full-screen monochrome-red post-process for dark adaptation
     int first_day_of_week; // first day of the week in date pickers: 0 = Sunday, 1 = Monday (default)
+    
+    bool show_isl;
     bool is_live;
     double current_epoch;
 

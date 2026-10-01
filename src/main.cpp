@@ -30,6 +30,7 @@
 #include "io/rotator.h"
 #include "data/async_fetch.h"
 #include "data/storage.h"
+#include "data/isl.h"
 #include "imgui.h"
 #include "IconsFontAwesome6.h"
 #include "render/shaders.h"
@@ -468,59 +469,6 @@ static void StopTrackingLost(TargetLock *lock, Satellite **sat, uint32_t *norad,
         NotifyPush(NOTIFY_INFO, ICON_FA_CROSSHAIRS, "Tracking stopped");
 }
 
-/* Check for Earth masking
- *
- * h_mask : masking height in [km]
- *
- * */
-bool earthMasking(const Vector3& sat1, const Vector3& sat2, const float h_mask = 1000)
-{
-    /* LOS vector */
-    const float dx = sat2.x - sat1.x;
-    const float dy = sat2.y - sat1.y;
-    const float dz = sat2.z - sat1.z;
-
-    const float los2 = dx * dx + dy * dy + dz * dz;
-
-    // Parameter t of the closest point on the infinite line
-    // sat1 + t * (sat2 - sat1) to the Earth's center.
-    const float t = -(sat1.x * dx +
-                      sat1.y * dy +
-                      sat1.z * dz) / los2;
-
-    // Closest point must be between sat1 and sat2.
-    if (t <= 0.0f || t >= 1.0f)
-        return false;
-
-    /*  Closest point on LOS */
-    const float x = sat1.x + t * dx;
-    const float y = sat1.y + t * dy;
-    const float z = sat1.z + t * dz;
-
-    const float distance2 = x * x + y * y + z * z;
-
-    const float distanceMin = (EARTH_RADIUS_KM + h_mask);
-
-    // Earth intersects the LOS
-    return distance2 < distanceMin * distanceMin;
-}
-
-/* Angle between two vectors */
-float angleBetween(const Vector3& a, const Vector3& b)
-{
-    // Cross product
-    const float cx = a.y * b.z - a.z * b.y;
-    const float cy = a.z * b.x - a.x * b.z;
-    const float cz = a.x * b.y - a.y * b.x;
-
-    const float crossNorm = std::sqrt(cx * cx + cy * cy + cz * cz);
-
-    // Dot product
-    const float dot = a.x * b.x + a.y * b.y + a.z * b.z;
-
-    return std::atan2(crossNorm, dot);  // radians
-}
-
 int main(void)
 {
     LogInit();
@@ -785,6 +733,7 @@ int main(void)
     Satellite *track_follow_sat = NULL;
 
     double current_epoch = (cfg.is_live? get_current_real_time_epoch() : cfg.current_epoch);
+
     double time_multiplier = 1.0;
     double saved_multiplier = 1.0;
     bool is_2d_view = false;
@@ -864,6 +813,25 @@ int main(void)
     }
 
     int current_update_idx = 0;
+
+    /* Load ISL schedule
+     *
+     * TODO: loading of ISL schedule
+     *
+     */
+
+    LinkSchedule schedule;
+
+    const char *scheduleFileName = "";
+    if (!linkScheduleRead(scheduleFileName, schedule))
+    {
+        LOG_ERROR("Failed to load ISL schedule %s", scheduleFileName);
+        return 1;
+    }
+    else
+    {
+      LOG_INFO("Loaded ISL schedule %s with %i epochs", scheduleFileName,schedule.epochs.size());
+    }
 
     /* main loop */
     while (!WindowShouldClose() && !exit_app)
@@ -2811,39 +2779,85 @@ int main(void)
             }
 
             /* ISL overlay 3d line
-             * TODO: load link schedule from file!
+             *
+             * TODO:
+             *
              * */
 
-            if (cfg.show_isl && active_sat && active_sat->is_active)
+            if (cfg.show_isl)
             {
-              for (int i = 0; i < sat_count; i++)
-              {
-                if (!satellites[i].is_active ||
-                    satellites[i].norad_id_num==active_sat->norad_id_num)
-                  continue;
 
-                /* Earth masking */
-                if (earthMasking(active_sat->current_pos,satellites[i].current_pos))
-                  continue;
+              //LOG_INFO("Draw ISLs for %15.6lf %15.6lf ",current_unix,current_epoch);
 
-                Vector3 h_pos3d = Vector3Scale(satellites[i].current_pos, 1.0f / DRAW_SCALE);
-                Vector3 s_pos3d = Vector3Scale(active_sat->current_pos, 1.0f / DRAW_SCALE);
+              const LinkEpoch* isls = linkScheduleFind(schedule, current_unix);
+              if (isls) {
+                for (int i = 0; i<isls->links.size(); i++)
+                {
 
-                /* draw on top of the clouds / scattering / ground coverage
-                 * layers: flush the pending batch, then disable depth test so
-                 * those earlier-drawn shells do not occlude the line between
-                 * home and the satellite (the batch must be flushed while the
-                 * state is changed, otherwise the line is drawn later with
-                 * depth testing still enabled) */
-                rlDrawRenderBatchActive();
-                rlDisableDepthTest();
-                rlDisableDepthMask();
-                DrawLine3D(h_pos3d, s_pos3d, ApplyAlpha(RED, 0.6f));
-                rlDrawRenderBatchActive();
-                rlEnableDepthTest();
-                rlEnableDepthMask();
+                  Vector3 pos3d1 = Vector3Zeros;
+                  Vector3 pos3d2 = Vector3Zeros;
+
+                  for (int j=0; j<sat_count; j++)
+                  {
+                    if (!satellites[j].is_active)
+                      continue;
+
+                    /* TODO: debug this!
+                    if(selected_sat && \
+                        (isls->links[i].norad1 != selected_sat->norad_id_num || \
+                        isls->links[i].norad2 != selected_sat->norad_id_num))
+                      continue;
+                    */
+
+                    if (isls->links[i].norad1 == satellites[j].norad_id_num)
+                      pos3d1 = Vector3Scale(satellites[j].current_pos, 1.0f / DRAW_SCALE);
+                    if (isls->links[i].norad2 == satellites[j].norad_id_num)
+                      pos3d2 = Vector3Scale(satellites[j].current_pos, 1.0f / DRAW_SCALE);
+                  }
+
+                  if(Vector3Length(pos3d1)<1 || Vector3Length(pos3d2)<1)
+                    continue;
+
+                  /* Draw ISL connections with depth test and depth mask enabled */
+                  rlDrawRenderBatchActive();
+                  DrawLine3D(pos3d1, pos3d2, ApplyAlpha(RED, 0.6f));
+                  rlDrawRenderBatchActive();
+
+                }
               }
+
             }
+
+//            if (cfg.show_isl && active_sat && active_sat->is_active)
+//            {
+//              for (int i = 0; i < sat_count; i++)
+//              {
+//                if (!satellites[i].is_active ||
+//                    satellites[i].norad_id_num==active_sat->norad_id_num)
+//                  continue;
+//
+//                /* Earth masking */
+//                if (earthMasking(active_sat->current_pos,satellites[i].current_pos))
+//                  continue;
+//
+//                Vector3 h_pos3d = Vector3Scale(satellites[i].current_pos, 1.0f / DRAW_SCALE);
+//                Vector3 s_pos3d = Vector3Scale(active_sat->current_pos, 1.0f / DRAW_SCALE);
+//
+//                /* draw on top of the clouds / scattering / ground coverage
+//                 * layers: flush the pending batch, then disable depth test so
+//                 * those earlier-drawn shells do not occlude the line between
+//                 * home and the satellite (the batch must be flushed while the
+//                 * state is changed, otherwise the line is drawn later with
+//                 * depth testing still enabled) */
+//                rlDrawRenderBatchActive();
+//                rlDisableDepthTest();
+//                rlDisableDepthMask();
+//                DrawLine3D(h_pos3d, s_pos3d, ApplyAlpha(RED, 0.6f));
+//                rlDrawRenderBatchActive();
+//                rlEnableDepthTest();
+//                rlEnableDepthMask();
+//              }
+//            }
 
             /* tool scene hooks (3D overlays) */
             DrawSceneHooks(&sctx, &cfg);
