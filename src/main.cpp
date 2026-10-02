@@ -2799,15 +2799,15 @@ int main(void)
 
                   for (int j=0; j<sat_count; j++)
                   {
+                    /* Do not show links to disabled satellites */
                     if (!satellites[j].is_active)
                       continue;
 
-                    /* TODO: debug this!
+                    /* Show only links from selected satellite */
                     if(selected_sat && \
-                        (isls->links[i].norad1 != selected_sat->norad_id_num || \
-                        isls->links[i].norad2 != selected_sat->norad_id_num))
+                         (isls->links[i].norad1 != selected_sat->norad_id_num && \
+                          isls->links[i].norad2 != selected_sat->norad_id_num))
                       continue;
-                    */
 
                     if (isls->links[i].norad1 == satellites[j].norad_id_num)
                       pos3d1 = Vector3Scale(satellites[j].current_pos, 1.0f / DRAW_SCALE);
