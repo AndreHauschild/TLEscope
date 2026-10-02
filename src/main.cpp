@@ -816,14 +816,14 @@ int main(void)
 
     /* Load ISL schedule
      *
-     * TODO: loading of ISL schedule
+     * TODO: loading of ISL schedule via file dialog
      *
      */
 
     LinkSchedule schedule;
 
-    const char *scheduleFileName = "";
-    if (!linkScheduleRead(scheduleFileName, schedule))
+    std::string scheduleFileName = std::string(std::getenv("HOME")) + "/GNSS_DAT/TLE/Galileo_20250501.txt";
+    if (!linkScheduleRead(scheduleFileName.c_str(), schedule))
     {
         LOG_ERROR("Failed to load ISL schedule %s", scheduleFileName);
         return 1;
