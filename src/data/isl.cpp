@@ -11,6 +11,11 @@
 #include <fstream>
 #include <iostream>
 
+/* Link schedule object */
+
+LinkSchedule schedule;
+
+/* Load link schedule file */
 
 bool linkScheduleRead(const char *filename, LinkSchedule &schedule)
 {
@@ -51,9 +56,7 @@ bool linkScheduleRead(const char *filename, LinkSchedule &schedule)
       entry.links.push_back({norad1,norad2});
     }
 
-    /*
-     * Make sure the input file is ordered by epoch.
-     */
+    /* Make sure the input file is ordered by epoch. */
     if (!schedule.epochs.empty() && epoch < schedule.epochs.back().epoch)
     {
       std::cerr << "Error: schedule is not sorted by epoch" << std::endl;
@@ -67,6 +70,7 @@ bool linkScheduleRead(const char *filename, LinkSchedule &schedule)
   return !file.bad();
 }
 
+/* Search for links for the current epoch */
 
 const LinkEpoch *linkScheduleFind(const LinkSchedule &schedule, double epoch)
 {
@@ -102,11 +106,12 @@ bool earthMasking(const Vector3& sat1, const Vector3& sat2, const float h_mask)
 
   const float los2 = dx * dx + dy * dy + dz * dz;
 
-  // Parameter t of the closest point on the infinite line
-  // sat1 + t * (sat2 - sat1) to the Earth's center.
+  /* Parameter t of the closest point on the infinite line
+   * sat1 + t * (sat2 - sat1) to the Earth's center.
+   */
   const float t = -(sat1.x * dx + sat1.y * dy + sat1.z * dz) / los2;
 
-  // Closest point must be between sat1 and sat2.
+  /* Closest point must be between sat1 and sat2 */
   if (t <= 0.0f || t >= 1.0f)
     return false;
 
@@ -119,7 +124,7 @@ bool earthMasking(const Vector3& sat1, const Vector3& sat2, const float h_mask)
 
   const float distanceMin = (EARTH_RADIUS_KM + h_mask);
 
-  // Earth intersects the LOS
+  /* Earth intersects the LOS */
   return distance2 < distanceMin * distanceMin;
 }
 

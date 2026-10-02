@@ -37,7 +37,9 @@ struct LinkSchedule
     std::vector<LinkEpoch> epochs;
 };
 
-/* Data structures */
+extern LinkSchedule schedule;
+
+/* Data functions */
 
 /* Read schedule from file */
 bool linkScheduleRead(const char *filename, LinkSchedule &schedule);

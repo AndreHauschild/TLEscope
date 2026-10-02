@@ -30,7 +30,6 @@
 #include "io/rotator.h"
 #include "data/async_fetch.h"
 #include "data/storage.h"
-#include "data/isl.h"
 #include "imgui.h"
 #include "IconsFontAwesome6.h"
 #include "render/shaders.h"
@@ -38,6 +37,8 @@
 #include "render/coverage_mesh.h"
 #include "render/map_view.h"
 #include "demo/demo_director.h"
+
+#include "data/isl.h"
 
 /* application state and resources */
 static AppConfig cfg = []() -> AppConfig {
@@ -813,25 +814,6 @@ int main(void)
     }
 
     int current_update_idx = 0;
-
-    /* Load ISL schedule
-     *
-     * TODO: loading of ISL schedule via file dialog
-     *
-     */
-
-    LinkSchedule schedule;
-
-    std::string scheduleFileName = std::string(std::getenv("HOME")) + "/GNSS_DAT/TLE/Galileo_20250501.txt";
-    if (!linkScheduleRead(scheduleFileName.c_str(), schedule))
-    {
-        LOG_ERROR("Failed to load ISL schedule %s", scheduleFileName);
-        return 1;
-    }
-    else
-    {
-      LOG_INFO("Loaded ISL schedule %s with %i epochs", scheduleFileName,schedule.epochs.size());
-    }
 
     /* main loop */
     while (!WindowShouldClose() && !exit_app)
@@ -2778,11 +2760,7 @@ int main(void)
                 rlEnableDepthMask();
             }
 
-            /* ISL overlay 3d line
-             *
-             * TODO:
-             *
-             * */
+            /* ISL overlay 3d line */
 
             if (cfg.show_isl)
             {

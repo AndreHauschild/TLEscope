@@ -12,6 +12,10 @@
 #include "map_detail_data.h"
 #include "render/map_view.h"
 
+#include "util/log.h"
+#include "data/file_dialog.h"
+#include "data/isl.h"
+
 #include <raylib.h>
 #include <raymath.h> /* DEG2RAD for the 3D sphere mapping */
 #include <rlgl.h>    /* batched line submission for the 3D overlays */
@@ -186,6 +190,22 @@ void DrawPanelLayers(UIContext *ctx, AppConfig *cfg)
                               "Show a ISL range line from all satellites (or one selected) to active satellites (3D only)");
             if (val != prev)
                 cfg->show_isl = val;
+
+            ImGui::SameLine();
+            if (ImGui::Button("Open file"))
+            {
+                const char *home = std::getenv("HOME");
+                if (home)
+                {
+                    g_ui.file_dialog.open(std::string(home) + "/GNSS_DAT/TLE");
+                }
+            }
+
+            if (g_ui.file_dialog.draw(g_ui.selected_file))
+            {
+                LOG_INFO("Opening file: %s",g_ui.selected_file.c_str());
+                linkScheduleRead(g_ui.selected_file.c_str(), schedule);
+            }
         }
 
         ImGui::Unindent();

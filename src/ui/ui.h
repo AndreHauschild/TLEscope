@@ -5,6 +5,9 @@
 #include "core/types.h"
 #include <raylib.h>
 
+#include "data/file_dialog.h"
+#include <string>
+
 typedef enum
 {
     LOCK_NONE,
@@ -157,6 +160,10 @@ typedef struct
     bool retlector_fetch_done;
     char custom_url_buf[512];
     char custom_paste_buf[4096];
+
+    /* file dialog state */
+    FileDialog file_dialog;
+    std::string selected_file;
 
     /* pass state */
     int selected_pass_idx;
