@@ -598,7 +598,6 @@ void LoadAppConfig(const char *filename, AppConfig *config)
         config->limit_map_zoomout = true;
         config->highlight_sunlit = false;
         config->show_slant_range = false;
-        config->show_isl = false;
         config->show_scattering = false;
         config->show_skybox = true;
         config->show_ground_coverage = true;
@@ -615,6 +614,10 @@ void LoadAppConfig(const char *filename, AppConfig *config)
         int home_idx = AddLocation("Home", 0.0f, 0.0f, 0.0f);
         if (home_idx >= 0)
             SetHomeLocation(home_idx);
+
+        config->is_live = true;
+    		config->current_epoch = 19571004.0;
+		    config->show_isl = false; // default
 
         config->show_first_run_dialog = true;
 

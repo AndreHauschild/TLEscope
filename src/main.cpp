@@ -2760,7 +2760,8 @@ int main(void)
                 rlEnableDepthMask();
             }
 
-            /* ISL overlay 3d line */
+            /* ISL overlay 3d line
+             * */
 
             if (cfg.show_isl)
             {
