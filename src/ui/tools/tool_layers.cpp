@@ -182,8 +182,8 @@ void DrawPanelLayers(UIContext *ctx, AppConfig *cfg)
         {
             bool val = cfg->show_isl;
             bool prev = val;
-            DrawLayerCheckbox("ISL Range", &val, ICON_FA_RULER,
-                              "Show a IL range line from all satellites to active satellite (3D only)");
+            DrawLayerCheckbox("ISL Range", &val, ICON_FA_ARROW_RIGHT_ARROW_LEFT,
+                              "Show a ISL range line from all satellites (or one selected) to active satellites (3D only)");
             if (val != prev)
                 cfg->show_isl = val;
         }
