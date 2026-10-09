@@ -2901,7 +2901,7 @@ int main(void)
                         {
                             if (active_sat == &satellites[i])
                             {
-                                sCol = g_theme.world.orbit_active;
+                                sCol = g_theme.world.sat_selected;
                             }
                             else
                             {
@@ -2921,7 +2921,7 @@ int main(void)
                                 if (!matched_favorite &&
                                     (&satellites[i] == selected_sat || orbits_dimmed))
                                 {
-                                    sCol = g_theme.world.orbit;
+                                    sCol = g_theme.world.sat;
                                 }
                             }
                         }
