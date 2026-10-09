@@ -18,6 +18,9 @@
 #include "core/theme.h"
 #include "core/location.h"
 #include "util/log.h"
+#ifdef __APPLE__
+#include "util/window_macos.h"
+#endif
 #include "core/types.h"
 #include "ui/ui.h"
 #include "ui/ui_layout.h"
@@ -496,10 +499,15 @@ int main(void)
     InitWindow(cfg.window_width, cfg.window_height, window_title);
     LOG_INFO("Window created: %dx%d, theme=%s", cfg.window_width, cfg.window_height, cfg.theme);
 
+#ifdef __APPLE__
+    ConfigureMacWindowFrameAutosave(GetWindowHandle());
+#endif
+
     /* install the Windows touch observer (no-op elsewhere) and restore fullscreen */
     TouchGestureInit();
     if (cfg.fullscreen) ToggleFullscreen();
 
+#ifndef __APPLE__
     int monitor = GetCurrentMonitor();
     int max_w = GetMonitorWidth(monitor);
     int max_h = GetMonitorHeight(monitor);
@@ -518,6 +526,7 @@ int main(void)
     {
         SetWindowPosition((int)monitorPos.x + (max_w - current_w) / 2, (int)monitorPos.y + (max_h - current_h) / 2);
     }
+#endif
 
     SetExitKey(0);
 
@@ -1043,13 +1052,7 @@ int main(void)
                         const float home_x = (home->lon / 360.0f) * map_w;
                         const float home_y = -(home->lat / 180.0f) * map_h;
 
-                        /* Zoom only as far as needed to put home at the scene
-                         * centre without exposing space beyond the map poles. */
-                        const float vertical_room = map_h - 2.0f * fabsf(home_y);
-                        const float home_zoom = vertical_room > 0.0f
-                            ? vp_h / vertical_room
-                            : fill_zoom;
-                        target_camera2d_zoom = fmaxf(fill_zoom, home_zoom);
+                        /* Preserve zoom when centering on home. */
                         target_camera2d_target = (Vector2){home_x, home_y};
                     }
                     else
@@ -2173,7 +2176,28 @@ int main(void)
                         continue;
 
                     bool is_hl = (active_sat == &satellites[i]);
-                    Color sCol = (selected_sat == &satellites[i]) ? g_theme.world.sat_selected : (hovered_sat == &satellites[i]) ? g_theme.world.sat_hover : g_theme.world.sat;
+                    const auto extra_it =
+                        std::find(extra_track_sats.begin(), extra_track_sats.end(),
+                                  &satellites[i]);
+                    const bool extra_is_fav_color =
+                        extra_it != extra_track_sats.end() &&
+                        extra_track_is_fav[(size_t)(extra_it - extra_track_sats.begin())];
+                    const bool draw_future_track =
+                        future_orbits_enabled && satellites[i].mean_motion > 0.0 &&
+                        !(is_pov_mode && &satellites[i] == selected_sat) &&
+                        (is_hl || extra_it != extra_track_sats.end());
+
+                    Color sCol = (selected_sat == &satellites[i])
+                        ? g_theme.world.sat_selected
+                        : (hovered_sat == &satellites[i])
+                            ? g_theme.world.sat_hover
+                            : g_theme.world.sat;
+                    if (draw_future_track)
+                    {
+                        sCol = is_hl ? g_theme.world.orbit_active
+                                     : (extra_is_fav_color ? MultiGroundTrackColor(i)
+                                                           : g_theme.world.orbit);
+                    }
                     sCol = ApplyAlpha(sCol, sat_alpha);
 
                     /* sunlit scope: Sel = active only, Fav = favorites only, All = everyone */
@@ -2182,38 +2206,12 @@ int main(void)
                                         (sunlit_scope == LAYERS_ORBITS_SUNLIT_FAV &&
                                          IsFavorite(satellites[i].norad_id_num));
 
-                    /* focused highlight track draws in Sel and Multi scopes */
-                    bool draw_future_track = false;
-                    if (future_orbits_enabled && satellites[i].mean_motion > 0.0 &&
-                        !(is_pov_mode && &satellites[i] == selected_sat))
-                    {
-                        if (is_hl)
-                        {
-                            draw_future_track = true; /* focused highlight track */
-                        }
-                        else if (std::find(extra_track_sats.begin(), extra_track_sats.end(),
-                                           &satellites[i]) != extra_track_sats.end())
-                        {
-                            draw_future_track = true; /* extra (fav-colored/dimmed) track */
-                        }
-                    }
-
                     if (draw_future_track)
                     {
                         const int segments = is_hl ? requested_future_segments : extra_future_segments;
                         Vector2 track_pts[4001];
                         bool is_sunlit_arr[4001];
 
-                        /* look up whether this extra track is fav-colored vs dimmed
-                         * (the index is guaranteed valid because the satellite is in
-                         * extra_track_sats, and extra_track_is_fav is kept in lockstep). */
-                        const auto extra_it = std::find(extra_track_sats.begin(),
-                                                        extra_track_sats.end(), &satellites[i]);
-                        const bool extra_is_fav_color =
-                            extra_it != extra_track_sats.end() &&
-                            extra_track_is_fav[(size_t)(extra_it - extra_track_sats.begin())];
-                        /* fav-colored extras use their palette color; dimmed extras use
-                         * the orbit color; the focused highlight uses the active color. */
                         const Color track_color = ApplyAlpha(
                             is_hl ? g_theme.world.orbit_active
                                   : (extra_is_fav_color ? MultiGroundTrackColor(i)
@@ -2899,6 +2897,34 @@ int main(void)
                     if (!(is_pov_mode && &satellites[i] == selected_sat))
                     {
                         Color sCol = (selected_sat == &satellites[i]) ? g_theme.world.sat_selected : (hovered_sat == &satellites[i]) ? g_theme.world.sat_hover : g_theme.world.sat;
+                        if (orbits_enabled)
+                        {
+                            if (active_sat == &satellites[i])
+                            {
+                                sCol = g_theme.world.orbit_active;
+                            }
+                            else
+                            {
+                                bool matched_favorite = false;
+                                if (orbits_fav_colored)
+                                {
+                                    for (int k = 0; k < fav_count; k++)
+                                    {
+                                        if (satellites[i].norad_id_num == fav_ids[k])
+                                        {
+                                            sCol = MultiGroundTrackColor(k);
+                                            matched_favorite = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (!matched_favorite &&
+                                    (&satellites[i] == selected_sat || orbits_dimmed))
+                                {
+                                    sCol = g_theme.world.orbit;
+                                }
+                            }
+                        }
                         sCol = ApplyAlpha(sCol, sat_alpha);
                         Vector2 sp = WorldToScreenViewport3D(draw_pos, Camera3DParams);
                         /* rotate the icon so its bottom-right corner points toward the earth
