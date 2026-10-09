@@ -226,7 +226,7 @@ static size_t write_memory_cb(void *contents, size_t size, size_t nmemb, void *u
 
 static bool http_status_success(long http_code)
 {
-    return http_code >= 200 && http_code < 300;
+    return http_code == 0 || (http_code >= 200 && http_code < 300);
 }
 
 static bool http_status_retryable(long http_code)
