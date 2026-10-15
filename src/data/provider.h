@@ -84,6 +84,12 @@ OrbitalDataFormat DetectDataFormat(const char *data, size_t size);
  *  the result.format will be set to the detected format. */
 FetchResult FetchFromCustomURL(const char *url);
 
+// -- Custom File Fetch --------------------------------------------------------
+
+/** fetch from a custom file and auto-detect the format.
+ *  the result.format will be set to the detected format. */
+FetchResult FetchFromCustomFile(const char *filename);
+
 // -- Built-in Source Lists ---------------------------------------------------
 
 extern const DataSource CELESTRAK_SOURCES[];

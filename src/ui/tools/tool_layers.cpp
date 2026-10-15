@@ -12,6 +12,8 @@
 #include "map_detail_data.h"
 #include "render/map_view.h"
 
+#include "data/file_dialog.h"
+
 #include <raylib.h>
 #include <raymath.h> /* DEG2RAD for the 3D sphere mapping */
 #include <rlgl.h>    /* batched line submission for the 3D overlays */

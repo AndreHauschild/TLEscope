@@ -172,6 +172,53 @@ static int parse_payload(const AsyncFetchJob *job, const char *data, size_t size
             }
             return count;
         }
+
+        case ASYNC_JOB_CUSTOM_FILE:
+        {
+            FetchResult result = FetchFromCustomFile(job->identifier);
+            if (result.success)
+            {
+                if (result.format == FORMAT_TLE)
+                {
+                    const char *ptr = result.data;
+                    char l0[256], l1[256], l2[256];
+                    while (*ptr && count < max)
+                    {
+                        while (*ptr == '\r' || *ptr == '\n') ptr++;
+                        if (!*ptr) break;
+                        if (*ptr == '#') { while (*ptr && *ptr != '\n') ptr++; continue; }
+                        int j = 0;
+                        while (*ptr && *ptr != '\n' && j < 255) l0[j++] = *ptr++;
+                        l0[j] = '\0'; if (*ptr == '\n') ptr++;
+                        j = 0;
+                        while (*ptr && *ptr != '\n' && j < 255) l1[j++] = *ptr++;
+                        l1[j] = '\0'; if (*ptr == '\n') ptr++;
+                        j = 0;
+                        while (*ptr && *ptr != '\n' && j < 255) l2[j++] = *ptr++;
+                        l2[j] = '\0'; if (*ptr == '\n') ptr++;
+                        OrbitalDataMeta meta = {0};
+                        snprintf(meta.source_name, sizeof(meta.source_name), "custom:%.31s", job->name);
+                        meta.format = result.format;
+                        meta.fetch_time = time(NULL);
+                        add_satellite_from_tle_to(out, &count, l0, l1, l2, &meta);
+                    }
+                }
+                else if (result.format == FORMAT_OMM_JSON)
+                {
+                    ParseOMMJson(result.data, result.size, out, &count, max, job->name, result.format);
+                }
+                else if (result.format == FORMAT_OMM_CSV)
+                {
+                    ParseOMMCsv(result.data, result.size, out, &count, max, job->name, result.format);
+                }
+                else if (result.format == FORMAT_OMM_KVN)
+                {
+                    ParseOMMKvn(result.data, result.size, out, &count, max, job->name, result.format);
+                }
+                FreeFetchResult(&result);
+            }
+            return count;
+        }
     }
 
     return count;
