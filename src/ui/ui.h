@@ -3,10 +3,8 @@
 
 #include "core/config.h"
 #include "core/types.h"
-#include <raylib.h>
-
 #include "data/file_dialog.h"
-#include <string>
+#include <raylib.h>
 
 typedef enum
 {
