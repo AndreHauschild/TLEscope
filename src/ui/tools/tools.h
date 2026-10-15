@@ -29,10 +29,12 @@ void DrawPanelPolarPlot(UIContext *ctx, AppConfig *cfg);
 void DrawPanelDoppler(UIContext *ctx, AppConfig *cfg);
 void DrawPanelLog(UIContext *ctx, AppConfig *cfg);
 void DrawPanelTrxdb(UIContext *ctx, AppConfig *cfg);
+void DrawPanelIsl(UIContext *ctx, AppConfig *cfg);
 
 /* scene hooks (draw into the 3D globe / 2D map, see tools_scene.h) */
 void DrawSceneLayers(SceneContext *sctx, AppConfig *cfg);
 void DrawScenePolarPlot(SceneContext *sctx, AppConfig *cfg);
+void DrawSceneIsl(SceneContext *sctx, AppConfig *cfg);
 
 /* screen-space ImGui overlay hook (runs after rlImGuiBegin, see ui.cpp) */
 void DrawMapGridLabels(UIContext *ctx, AppConfig *cfg);

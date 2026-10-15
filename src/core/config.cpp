@@ -56,7 +56,6 @@ void LoadAppConfig(const char *filename, AppConfig *config)
 
     config->is_live = true;
     config->current_epoch = 19571004.0;
-    config->show_isl = false; // default
 
     // default rotator settings (mirror the static defaults in rotator.cpp)
     {
@@ -198,7 +197,6 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                     config->use_local_time = get_bool("use_local_time", config->use_local_time);
                     config->night_mode = get_bool("night_mode", config->night_mode);
 
-                    config->show_isl = get_bool("show_isl", config->show_isl);
                     config->is_live = get_bool("is_live", config->is_live);
                     config->current_epoch = get_float("current_epoch", config->current_epoch);
 
@@ -617,7 +615,6 @@ void LoadAppConfig(const char *filename, AppConfig *config)
 
         config->is_live = true;
     		config->current_epoch = 19571004.0;
-		    config->show_isl = false; // default
 
         config->show_first_run_dialog = true;
 
@@ -674,7 +671,6 @@ void SaveAppConfig(const char *filename, AppConfig *config)
     root["network_timeout_seconds"] = config->network_timeout_seconds;
     root["prop_use_short_period"] = config->prop_use_short_period;
 
-    root["show_isl"] = config->show_isl;
     root["is_live"] = config->is_live;
     root["current_epoch"] = config->current_epoch;
 

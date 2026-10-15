@@ -41,8 +41,6 @@
 #include "render/map_view.h"
 #include "demo/demo_director.h"
 
-#include "data/isl.h"
-
 /* application state and resources */
 static AppConfig cfg = []() -> AppConfig {
     AppConfig c = {};
@@ -61,7 +59,6 @@ static AppConfig cfg = []() -> AppConfig {
     c.show_scattering = false;
     c.hint_vsync = false;
     c.night_mode = false;
-    c.show_isl = false;
     c.is_live = true;
     c.current_epoch = 19571004.0;
     return c;
@@ -76,7 +73,7 @@ static Model earthModel, moonModel, cloudModel, atmosphereModel, skyboxModel;
 static struct {
     Shader shader3D;
     Shader shader2D;
-
+    
     /* Uniform locations for 3D shader */
     int satPosLoc;
     int colorLoc;
@@ -84,7 +81,7 @@ static struct {
     int depthBiasLoc;
     int edgeFalloffLoc;
     int cameraPosLoc;
-
+    
     /* Uniform locations for 2D shader */
     int colorLoc2D;
     int borderColorLoc2D;
@@ -676,18 +673,18 @@ int main(void)
     LOG_INFO("Compiling ground coverage shaders...");
     g_coverage_shaders.shader3D = LoadShaderFromMemory(CoverageShaders::vsCoverage3D, CoverageShaders::fsCoverage3D);
     g_coverage_shaders.shader2D = LoadShaderFromMemory(NULL, CoverageShaders::fsCoverage2D);
-
+    
     g_coverage_shaders.satPosLoc = GetShaderLocation(g_coverage_shaders.shader3D, "satPosition");
     g_coverage_shaders.colorLoc = GetShaderLocation(g_coverage_shaders.shader3D, "coverageColor");
     g_coverage_shaders.borderColorLoc = GetShaderLocation(g_coverage_shaders.shader3D, "borderColor");
     g_coverage_shaders.depthBiasLoc = GetShaderLocation(g_coverage_shaders.shader3D, "depthBias");
     g_coverage_shaders.edgeFalloffLoc = GetShaderLocation(g_coverage_shaders.shader3D, "edgeFalloff");
     g_coverage_shaders.cameraPosLoc = GetShaderLocation(g_coverage_shaders.shader3D, "cameraPos");
-
+    
     g_coverage_shaders.colorLoc2D = GetShaderLocation(g_coverage_shaders.shader2D, "coverageColor");
     g_coverage_shaders.borderColorLoc2D = GetShaderLocation(g_coverage_shaders.shader2D, "borderColor");
     g_coverage_shaders.edgeFalloffLoc2D = GetShaderLocation(g_coverage_shaders.shader2D, "edgeFalloff");
-
+    
     /* Set static uniforms */
     float depthBias = 0.00001f;
     /* Hard, crisp edge by default (0 = pure ~1 px fwidth()-based anti-aliasing). */
@@ -821,7 +818,7 @@ int main(void)
         ClearWindowState(FLAG_VSYNC_HINT);
         SetTargetFPS(cfg.target_fps);
     }
-
+    
     int current_update_idx = 0;
 
     /* main loop */
@@ -955,7 +952,7 @@ int main(void)
                     NotifyPush(NOTIFY_INFO, ICON_FA_PLAY, "Time resumed");
                 }
             }
-
+            
             static double warp_hold_start = 0.0;
             static double last_warp_step = 0.0;
             bool step_fwd = false;
@@ -1142,7 +1139,7 @@ int main(void)
                 if (satellites[current_update_idx].is_active)
                 {
                     // only update if satellite drifted
-                    if (!is_orbit_cache_valid(&satellites[current_update_idx],
+                    if (!is_orbit_cache_valid(&satellites[current_update_idx], 
                                               satellites[current_update_idx].current_pos,
                                               cfg.orbit_cache_drift_threshold_km))
                     {
@@ -1271,7 +1268,7 @@ int main(void)
                 LOG_INFO("VSync disabled, target FPS: %d", cfg.target_fps);
             }
         }
-
+        
         /* 2D picking/camera (skipped while Demo Mode owns the scene) */
         if (!DemoDirectorActive() && is_2d_view)
         {
@@ -1380,7 +1377,7 @@ int main(void)
             {
                 float rot_speed = 1.5f * GetFrameTime();
                 bool moved = false;
-
+                
                 if (is_pov_mode && selected_sat && selected_sat->is_active)
                 {
                     if (IsKeyDown(KEY_RIGHT)) { target_camAngleX -= rot_speed; moved = true; }
@@ -1430,7 +1427,7 @@ int main(void)
                         {
                             Vector3 closest_on_ray = Vector3Scale(mouseRay.direction, proj);
                             float distToRaySqr = Vector3DistanceSqr(to_sat, closest_on_ray);
-
+                            
                             float hit_radius_sqr = 0.000225f * distToCamSqr * (cfg.ui_scale * cfg.ui_scale);
 
                             if (distToRaySqr < hit_radius_sqr && proj < closest_dist)
@@ -1713,11 +1710,11 @@ int main(void)
         {
             Vector3 sat_pos_3d = Vector3Scale(selected_sat->current_pos, 1.0f / DRAW_SCALE);
             Camera3DParams.position = sat_pos_3d;
-
+            
             /* create an LVLH local coordinate frame */
             double t_unix = get_unix_from_epoch(current_epoch);
             Vector3 vel = Vector3Normalize(calculate_velocity(selected_sat, t_unix));
-
+            
             Vector3 nadir = Vector3Normalize(Vector3Negate(sat_pos_3d));
 
             Vector3 right = Vector3Normalize(Vector3CrossProduct(vel, nadir));
@@ -2757,84 +2754,6 @@ int main(void)
                 rlEnableDepthTest();
                 rlEnableDepthMask();
             }
-
-            /* ISL overlay 3d line
-             * */
-
-            if (cfg.show_isl)
-            {
-
-              //LOG_INFO("Draw ISLs for %15.6lf %15.6lf ",current_unix,current_epoch);
-
-              const LinkEpoch* isls = linkScheduleFind(schedule, current_unix);
-              if (isls) {
-                for (int i = 0; i<isls->links.size(); i++)
-                {
-
-                  Vector3 pos3d1 = Vector3Zeros;
-                  Vector3 pos3d2 = Vector3Zeros;
-
-                  for (int j=0; j<sat_count; j++)
-                  {
-                    /* Do not show links to disabled satellites */
-                    if (!satellites[j].is_active)
-                      continue;
-
-                    /* Show only links from selected satellite */
-                    if(selected_sat && \
-                         (isls->links[i].norad1 != selected_sat->norad_id_num && \
-                          isls->links[i].norad2 != selected_sat->norad_id_num))
-                      continue;
-
-                    if (isls->links[i].norad1 == satellites[j].norad_id_num)
-                      pos3d1 = Vector3Scale(satellites[j].current_pos, 1.0f / DRAW_SCALE);
-                    if (isls->links[i].norad2 == satellites[j].norad_id_num)
-                      pos3d2 = Vector3Scale(satellites[j].current_pos, 1.0f / DRAW_SCALE);
-                  }
-
-                  if(Vector3Length(pos3d1)<1 || Vector3Length(pos3d2)<1)
-                    continue;
-
-                  /* Draw ISL connections with depth test and depth mask enabled */
-                  rlDrawRenderBatchActive();
-                  DrawLine3D(pos3d1, pos3d2, ApplyAlpha(RED, 0.6f));
-                  rlDrawRenderBatchActive();
-
-                }
-              }
-
-            }
-
-//            if (cfg.show_isl && active_sat && active_sat->is_active)
-//            {
-//              for (int i = 0; i < sat_count; i++)
-//              {
-//                if (!satellites[i].is_active ||
-//                    satellites[i].norad_id_num==active_sat->norad_id_num)
-//                  continue;
-//
-//                /* Earth masking */
-//                if (earthMasking(active_sat->current_pos,satellites[i].current_pos))
-//                  continue;
-//
-//                Vector3 h_pos3d = Vector3Scale(satellites[i].current_pos, 1.0f / DRAW_SCALE);
-//                Vector3 s_pos3d = Vector3Scale(active_sat->current_pos, 1.0f / DRAW_SCALE);
-//
-//                /* draw on top of the clouds / scattering / ground coverage
-//                 * layers: flush the pending batch, then disable depth test so
-//                 * those earlier-drawn shells do not occlude the line between
-//                 * home and the satellite (the batch must be flushed while the
-//                 * state is changed, otherwise the line is drawn later with
-//                 * depth testing still enabled) */
-//                rlDrawRenderBatchActive();
-//                rlDisableDepthTest();
-//                rlDisableDepthMask();
-//                DrawLine3D(h_pos3d, s_pos3d, ApplyAlpha(RED, 0.6f));
-//                rlDrawRenderBatchActive();
-//                rlEnableDepthTest();
-//                rlEnableDepthMask();
-//              }
-//            }
 
             /* tool scene hooks (3D overlays) */
             DrawSceneHooks(&sctx, &cfg);

@@ -423,8 +423,6 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
         }
     }
 
-    // TODO: add ISL range label!
-
     /* ---- declutter + render ---- */
     if (cands.empty()) return;
 

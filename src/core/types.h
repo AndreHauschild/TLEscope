@@ -112,6 +112,7 @@ typedef enum
     PANEL_DOPPLER,          /* Doppler Analysis             -> right */
     PANEL_LOG,              /* Log                          -> right */
     PANEL_TRXDB,            /* TRXDB NORAD TEST             -> right */
+    PANEL_ISL,              /* ISL                          -> left */
     PANEL_COUNT
 } PanelId;
 
@@ -363,8 +364,7 @@ typedef struct
     bool use_local_time;   // display dates/times in the system local timezone (default true)
     bool night_mode;       // full-screen monochrome-red post-process for dark adaptation
     int first_day_of_week; // first day of the week in date pickers: 0 = Sunday, 1 = Monday (default)
-    
-    bool show_isl;
+
     bool is_live;
     double current_epoch;
 

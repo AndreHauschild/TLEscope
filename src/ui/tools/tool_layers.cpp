@@ -12,10 +12,6 @@
 #include "map_detail_data.h"
 #include "render/map_view.h"
 
-#include "util/log.h"
-#include "data/file_dialog.h"
-#include "data/isl.h"
-
 #include <raylib.h>
 #include <raymath.h> /* DEG2RAD for the 3D sphere mapping */
 #include <rlgl.h>    /* batched line submission for the 3D overlays */
@@ -180,30 +176,6 @@ void DrawPanelLayers(UIContext *ctx, AppConfig *cfg)
                               "Show a slant range line from the home location to the active satellite (2D and 3D)");
             if (val != prev)
                 cfg->show_slant_range = val;
-        }
-
-        /* ISL range */
-        {
-            bool val = cfg->show_isl;
-            bool prev = val;
-            DrawLayerCheckbox("ISL Range", &val, ICON_FA_ARROW_RIGHT_ARROW_LEFT,
-                              "Show a ISL range line from all satellites (or one selected) to active satellites (3D only)");
-            if (val != prev)
-                cfg->show_isl = val;
-
-            ImGui::SameLine();
-            if (ImGui::Button("Open file"))
-            {
-                char *home = std::getenv("HOME");
-                std::string initialPath = (home? std::string(home)+ "/GNSS_DAT/TLE" : ".");
-                g_ui.file_dialog_isl.open(initialPath);
-            }
-
-            if (g_ui.file_dialog_isl.draw())
-            {
-                LOG_INFO("Opening ISL schedule file: %s",g_ui.file_dialog_isl.fileName().c_str());
-                linkScheduleRead(g_ui.file_dialog_isl.fileName().c_str(), schedule);
-            }
         }
 
         ImGui::Unindent();
