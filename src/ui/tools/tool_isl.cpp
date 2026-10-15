@@ -16,12 +16,14 @@
 #include "tools.h"
 #include "tools_common.h"
 #include "tools_registry.h"
-#include "tools_scene.h"
 #include "tools_settings.h"
+#include "core/astro.h"
 #include "core/config.h"
+#include "core/theme.h"
 #include "util/log.h"
 
 #include "imgui.h"
+#include "IconsFontAwesome6.h"
 #include "raylib.h"
 #include "raymath.h"
 #include "rlgl.h"
@@ -115,10 +117,10 @@ const LinkEpoch *linkScheduleFind(const LinkSchedule &schedule, double epoch)
   /*
    * std::lower_bound performs a binary search.
    *
-   * It returns the first element whose epoch is >= the requested epoch.
+   * It returns the first element whose epoch is <= the requested epoch.
    */
   auto it = std::lower_bound(schedule.epochs.begin(), schedule.epochs.end(), epoch,
-      [](const LinkEpoch &entry, double value){ return entry.epoch < value; });
+      [](const LinkEpoch &entry, double epoch){ return entry.epoch <= epoch; });
 
   if (it != schedule.epochs.end())
   {
@@ -134,7 +136,7 @@ const LinkEpoch *linkScheduleFind(const LinkSchedule &schedule, double epoch)
  * h_mask : masking height in [km]
  *
  * */
-bool earthMasking(const Vector3& sat1, const Vector3& sat2, const float h_mask)
+bool earthMasking(const Vector3& sat1, const Vector3& sat2, const float h_mask=1000)
 {
   /* LOS vector */
 
@@ -174,16 +176,37 @@ float angleBetween(const Vector3& a, const Vector3& b)
   return std::atan2(Vector3Length(c), Vector3DotProduct(a,b));  // radians
 }
 
-
+/* Draw the tool panel */
 
 void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
 {
   (void)ctx;
 
-  /* ISL range
-    DrawLayerCheckbox("ISL Range", &val, ICON_FA_ARROW_RIGHT_ARROW_LEFT,
-                      "Show a ISL range line from all satellites (or one selected) to active satellites (3D only)");
-   */
+  /* fixed icon width so all checkboxes align vertically */
+  const float icon_w = 24.0f;
+
+  auto DrawLayerCheckbox = [&](const char *label, bool *value, const char *icon, const char *tooltip) {
+      ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(*value ? g_theme.ui.accent : g_theme.ui.text_dim));
+      ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
+      /* center the icon within a fixed-width cell so all rows align */
+      ImVec2 icon_sz = ImGui::CalcTextSize(icon);
+      ImVec2 pos = ImGui::GetCursorScreenPos();
+      ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x + (icon_w - icon_sz.x) * 0.5f, pos.y), col, icon);
+      ImGui::PopStyleColor();
+      ImGui::Dummy(ImVec2(icon_w, ImGui::GetFrameHeight()));
+      ImGui::SameLine();
+      ImGui::Checkbox(label, value);
+      if (tooltip && ImGui::IsItemHovered())
+          ImGui::SetTooltip("%s", tooltip);
+  };
+
+  bool showIsl = ToolSettingGetBool(cfg, "isl.enabled", false);
+  bool prev = showIsl;
+  DrawLayerCheckbox("ISL Range", &showIsl, ICON_FA_ARROW_RIGHT_ARROW_LEFT,
+                    "Show a ISL range line from all satellites (or one selected) to active satellites (3D only)");
+  if (showIsl!=prev)
+    ToolSettingSetBool(cfg, "isl.enabled", showIsl);
+  ImGui::SameLine();
 
   if (ImGui::Button("Open file"))
   {
@@ -191,24 +214,25 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     std::string initialPath = (home? std::string(home)+ "/GNSS_DAT/TLE" : ".");
     file_dialog_isl.open(initialPath);
   }
-
   if (file_dialog_isl.draw())
   {
     LOG_INFO("Opening ISL schedule file: %s",file_dialog_isl.fileName().c_str());
     linkScheduleRead(file_dialog_isl.fileName().c_str(), schedule);
   }
 
-  bool showIsl = ToolSettingGetBool(cfg, "isl.enabled", false);
-  if (ImGui::Checkbox("Show ISLs", &showIsl))
-    ToolSettingSetBool(cfg, "isl.enabled", showIsl);
 }
 
-void DrawSceneIsl(SceneContext *ctx, AppConfig *cfg)
+/* Draw scene overlay */
+
+void DrawSceneIsl(SceneContext *sctx, AppConfig *cfg)
 {
+
+  LOG_INFO("Current epoch %15.6f",sctx->current_epoch);
 
   if (ToolSettingGetBool(cfg, "isl.enabled", false))
   {
-    const LinkEpoch* isls = linkScheduleFind(schedule, ctx->current_epoch);
+    double unix_time = get_unix_from_epoch(sctx->current_epoch);
+    const LinkEpoch* isls = linkScheduleFind(schedule, unix_time);
     if (isls) {
       for (int i = 0; i<isls->links.size(); i++)
       {
@@ -223,9 +247,9 @@ void DrawSceneIsl(SceneContext *ctx, AppConfig *cfg)
             continue;
 
           /* Show only links from selected satellite */
-          if(ctx->selected_sat && \
-              (isls->links[i].norad1 != ctx->selected_sat->norad_id_num && \
-                  isls->links[i].norad2 != ctx->selected_sat->norad_id_num))
+          if(sctx->selected_sat && \
+              (isls->links[i].norad1 != sctx->selected_sat->norad_id_num && \
+               isls->links[i].norad2 != sctx->selected_sat->norad_id_num))
             continue;
 
           if (isls->links[i].norad1 == satellites[j].norad_id_num)
@@ -244,35 +268,40 @@ void DrawSceneIsl(SceneContext *ctx, AppConfig *cfg)
       }
     }
   }
+
+#define DEBUG 0
+#if DEBUG > 0
+  if (sctx->active_sat && sctx->active_sat->is_active)
+  {
+    for (int i = 0; i < sat_count; i++)
+    {
+      if (!satellites[i].is_active ||
+          satellites[i].norad_id_num==sctx->active_sat->norad_id_num)
+        continue;
+
+      /* Earth masking */
+      if (earthMasking(sctx->active_sat->current_pos,satellites[i].current_pos))
+        continue;
+
+      Vector3 h_pos3d = Vector3Scale(satellites[i].current_pos, 1.0f / DRAW_SCALE);
+      Vector3 s_pos3d = Vector3Scale(sctx->active_sat->current_pos, 1.0f / DRAW_SCALE);
+
+      /* draw on top of the clouds / scattering / ground coverage
+       * layers: flush the pending batch, then disable depth test so
+       * those earlier-drawn shells do not occlude the line between
+       * home and the satellite (the batch must be flushed while the
+       * state is changed, otherwise the line is drawn later with
+       * depth testing still enabled) */
+      rlDrawRenderBatchActive();
+      rlDisableDepthTest();
+      rlDisableDepthMask();
+      DrawLine3D(h_pos3d, s_pos3d, ApplyAlpha(RED, 0.6f));
+      rlDrawRenderBatchActive();
+      rlEnableDepthTest();
+      rlEnableDepthMask();
+    }
+  }
+#endif
+
 }
 
-//            if (cfg.show_isl && active_sat && active_sat->is_active)
-//            {
-//              for (int i = 0; i < sat_count; i++)
-//              {
-//                if (!satellites[i].is_active ||
-//                    satellites[i].norad_id_num==active_sat->norad_id_num)
-//                  continue;
-//
-//                /* Earth masking */
-//                if (earthMasking(active_sat->current_pos,satellites[i].current_pos))
-//                  continue;
-//
-//                Vector3 h_pos3d = Vector3Scale(satellites[i].current_pos, 1.0f / DRAW_SCALE);
-//                Vector3 s_pos3d = Vector3Scale(active_sat->current_pos, 1.0f / DRAW_SCALE);
-//
-//                /* draw on top of the clouds / scattering / ground coverage
-//                 * layers: flush the pending batch, then disable depth test so
-//                 * those earlier-drawn shells do not occlude the line between
-//                 * home and the satellite (the batch must be flushed while the
-//                 * state is changed, otherwise the line is drawn later with
-//                 * depth testing still enabled) */
-//                rlDrawRenderBatchActive();
-//                rlDisableDepthTest();
-//                rlDisableDepthMask();
-//                DrawLine3D(h_pos3d, s_pos3d, ApplyAlpha(RED, 0.6f));
-//                rlDrawRenderBatchActive();
-//                rlEnableDepthTest();
-//                rlEnableDepthMask();
-//              }
-//            }
