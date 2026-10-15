@@ -1,5 +1,14 @@
-#pragma once
+#ifndef FILE_DIALOG_H
+#define FILE_DIALOG_H
 
+/**
+ * @file file_dialog.h
+ * @brief File selection dialog
+ *
+ * A simple file selection dialog
+ * 
+ */
+ 
 #include <string>
 #include <filesystem>
 
@@ -27,3 +36,5 @@ class FileDialog
     std::string fileName_;
     std::string fileNameSelected_;
 };
+
+#endif // FILE_DIALOG_H
