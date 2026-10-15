@@ -51,5 +51,5 @@ const PanelDef g_panel_defs[PANEL_COUNT] = {
     { PANEL_DOPPLER,      "Doppler Analysis",    ICON_FA_TOWER_BROADCAST, PANEL_CAT_EXTRA, SIDEBAR_RIGHT, false, false, DrawPanelDoppler },
     { PANEL_LOG,          "Log",                 ICON_FA_LIST,            PANEL_CAT_DEBUG, SIDEBAR_RIGHT, false, false, DrawPanelLog },
     { PANEL_TRXDB,        "TRXDB NORAD TEST",    ICON_FA_SATELLITE_DISH,  PANEL_CAT_EXTRA, SIDEBAR_RIGHT, false, false, DrawPanelTrxdb },
-    { PANEL_ISL, "Inter-Satellite Links", ICON_FA_ARROW_RIGHT_ARROW_LEFT, PANEL_CAT_EXTRA, SIDEBAR_LEFT,  false, false, DrawPanelIsl, DrawSceneIsl },
+    { PANEL_ISL, "Inter-Satellite Links", ICON_FA_ARROW_RIGHT_ARROW_LEFT, PANEL_CAT_EXTRA, SIDEBAR_LEFT,  true,  false, DrawPanelIsl, DrawSceneIsl },
 };
