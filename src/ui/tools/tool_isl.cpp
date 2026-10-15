@@ -117,12 +117,16 @@ const LinkEpoch *linkScheduleFind(const LinkSchedule &schedule, double epoch)
   /*
    * std::lower_bound performs a binary search.
    *
-   * It returns the first element whose epoch is <= the requested epoch.
+   * It returns the first element whose epoch is < the requested epoch.
    */
   auto it = std::lower_bound(schedule.epochs.begin(), schedule.epochs.end(), epoch,
-      [](const LinkEpoch &entry, double epoch){ return entry.epoch <= epoch; });
+      [](const LinkEpoch &entry, double epoch){ return entry.epoch < epoch; });
 
-  if (it != schedule.epochs.end())
+  /* NOTE: the first test is false for empty vector, so the others are not evaluated
+   * in this case preventing a segmentation fault!
+   */
+  if (it != schedule.epochs.end() &&
+      epoch>=(schedule.epochs.front()).epoch && epoch<=(schedule.epochs.back()).epoch)
   {
     return &(*it);
   }
