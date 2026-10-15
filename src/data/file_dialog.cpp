@@ -45,7 +45,7 @@ void FileDialog::setDirectory(const fs::path& path)
   }
 }
 
-bool FileDialog::draw(std::string& selectedFile)
+bool FileDialog::draw()
 {
   bool result = false;
 
@@ -54,10 +54,7 @@ bool FileDialog::draw(std::string& selectedFile)
 
   ImGui::SetNextWindowSize(ImVec2(700, 500), ImGuiCond_FirstUseEver);
 
-  if (ImGui::BeginPopupModal(
-      "Open File",
-      nullptr,
-      ImGuiWindowFlags_NoCollapse))
+  if (ImGui::BeginPopupModal("Open File",nullptr,ImGuiWindowFlags_NoCollapse))
   {
     // ------------------------------------------------------------
     // Current directory
@@ -69,11 +66,7 @@ bool FileDialog::draw(std::string& selectedFile)
     ImGui::SameLine();
 
     ImGui::SetNextItemWidth(-1);
-    ImGui::InputText(
-        "##directory",
-        directory.data(),
-        directory.size() + 1,
-        ImGuiInputTextFlags_ReadOnly);
+    ImGui::InputText("##directory",directory.data(),directory.size() + 1,ImGuiInputTextFlags_ReadOnly);
 
     // ------------------------------------------------------------
     // Navigation buttons
@@ -103,10 +96,7 @@ bool FileDialog::draw(std::string& selectedFile)
     // Directory / file list
     // ------------------------------------------------------------
 
-    if (ImGui::BeginChild(
-        "FileList",
-        ImVec2(0, -80),
-        ImGuiChildFlags_Borders))
+    if (ImGui::BeginChild("FileList",ImVec2(0, -80),ImGuiChildFlags_Borders))
     {
       std::vector<fs::directory_entry> entries;
 
@@ -170,27 +160,18 @@ bool FileDialog::draw(std::string& selectedFile)
             continue;
           }
 
-          bool selected =
-              fileName_ == name;
-
-          if (ImGui::Selectable(
-              name.c_str(),
-              selected))
+          bool selected = fileName_ == name;
+          if (ImGui::Selectable(name.c_str(),selected))
           {
             fileName_ = name;
           }
 
           // Double-click opens the file.
-          if (selected &&
-              ImGui::IsMouseDoubleClicked(
-                  ImGuiMouseButton_Left))
+          if (selected && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
           {
-            selectedFile =
-                (currentDirectory_ / name).string();
-
+            fileNameSelected_ = (currentDirectory_ / name).string();
             open_ = false;
             ImGui::CloseCurrentPopup();
-
             result = true;
           }
         }
@@ -210,16 +191,9 @@ bool FileDialog::draw(std::string& selectedFile)
     ImGui::SetNextItemWidth(-160);
 
     char buffer[512];
-    std::snprintf(
-        buffer,
-        sizeof(buffer),
-        "%s",
-        fileName_.c_str());
+    std::snprintf(buffer,sizeof(buffer),"%s",fileName_.c_str());
 
-    if (ImGui::InputText(
-        "##filename",
-        buffer,
-        sizeof(buffer)))
+    if (ImGui::InputText("##filename",buffer,sizeof(buffer)))
     {
       fileName_ = buffer;
     }
@@ -230,14 +204,13 @@ bool FileDialog::draw(std::string& selectedFile)
     {
       if (!fileName_.empty())
       {
-        fs::path path =
-            currentDirectory_ / fileName_;
+        fs::path path = currentDirectory_ / fileName_;
 
         std::error_code ec;
 
         if (fs::is_regular_file(path, ec))
         {
-          selectedFile = path.string();
+          fileNameSelected_ = path.string();
 
           open_ = false;
           ImGui::CloseCurrentPopup();

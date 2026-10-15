@@ -11,9 +11,11 @@ class FileDialog
 
     // Call every frame while the dialog is active.
     // Returns true when the user selected a file.
-    bool draw(std::string& selectedFile);
+    bool draw();
 
     bool isOpen() const { return open_; }
+
+    std::string fileName() const { return fileNameSelected_; };
 
   private:
 
@@ -23,4 +25,5 @@ class FileDialog
 
     std::filesystem::path currentDirectory_;
     std::string fileName_;
+    std::string fileNameSelected_;
 };

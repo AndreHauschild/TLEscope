@@ -194,17 +194,15 @@ void DrawPanelLayers(UIContext *ctx, AppConfig *cfg)
             ImGui::SameLine();
             if (ImGui::Button("Open file"))
             {
-                const char *home = std::getenv("HOME");
-                if (home)
-                {
-                    g_ui.file_dialog.open(std::string(home) + "/GNSS_DAT/TLE");
-                }
+                char *home = std::getenv("HOME");
+                std::string initialPath = (home? std::string(home)+ "/GNSS_DAT/TLE" : ".");
+                g_ui.file_dialog_isl.open(initialPath);
             }
 
-            if (g_ui.file_dialog.draw(g_ui.selected_file))
+            if (g_ui.file_dialog_isl.draw())
             {
-                LOG_INFO("Opening file: %s",g_ui.selected_file.c_str());
-                linkScheduleRead(g_ui.selected_file.c_str(), schedule);
+                LOG_INFO("Opening ISL schedule file: %s",g_ui.file_dialog_isl.fileName().c_str());
+                linkScheduleRead(g_ui.file_dialog_isl.fileName().c_str(), schedule);
             }
         }
 

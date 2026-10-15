@@ -161,9 +161,8 @@ typedef struct
     char custom_url_buf[512];
     char custom_paste_buf[4096];
 
-    /* file dialog state */
-    FileDialog file_dialog;
-    std::string selected_file;
+    /* file dialog */
+    FileDialog file_dialog_isl;
 
     /* pass state */
     int selected_pass_idx;
