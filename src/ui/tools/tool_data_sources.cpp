@@ -352,9 +352,13 @@ void DrawPanelDataSources(UIContext *ctx, AppConfig *cfg)
      * ==================================================================== */
     if (ImGui::CollapsingHeader("Custom File"))
     {
-        /* File dialog + file input + Add button on the same line */
+        /* file input + file dialog + add button on the same line */
         float file_btn_w = ImGui::GetFrameHeight();
         static char s_file_buf[512] = "";
+
+        ImGui::SetNextItemWidth(avail_w - 2*file_btn_w - ImGui::GetStyle().ItemSpacing.x);
+        ImGui::InputText("##custom_file", s_file_buf, sizeof(s_file_buf));
+        ImGui::SameLine();
 
         if (ImGui::Button(ICON_FA_FOLDER "##select_custom_file",ImVec2(file_btn_w, file_btn_w)))
         {
@@ -363,7 +367,8 @@ void DrawPanelDataSources(UIContext *ctx, AppConfig *cfg)
 
             LOG_DEBUG("Open '%s' for loading file", initialpath);
 
-            g_ui.file_dialog_tle.open(std::string(initialpath)+"/GNSS_DAT/TLE");
+            // TODO: preserve the last file path!
+            g_ui.file_dialog_tle.open(std::string(initialpath));
 
         }
         if (g_ui.file_dialog_tle.isOpen())
@@ -376,10 +381,6 @@ void DrawPanelDataSources(UIContext *ctx, AppConfig *cfg)
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Select file");
-        ImGui::SameLine();
-
-        ImGui::SetNextItemWidth(avail_w - 2*file_btn_w - ImGui::GetStyle().ItemSpacing.x);
-        ImGui::InputText("##custom_file", s_file_buf, sizeof(s_file_buf));
         ImGui::SameLine();
 
         if (ImGui::Button(ICON_FA_PLUS "##add_custom_file", ImVec2(file_btn_w, file_btn_w)) && s_file_buf[0])
