@@ -368,7 +368,7 @@ void DrawPanelDataSources(UIContext *ctx, AppConfig *cfg)
             LOG_DEBUG("Open '%s' for loading file", initialpath);
 
             // TODO: preserve the last file path!
-            g_ui.file_dialog_tle.open(std::string(initialpath));
+            g_ui.file_dialog_tle.open(std::string(initialpath)+"/GNSS_DAT/TLE");
 
         }
         if (g_ui.file_dialog_tle.isOpen())
