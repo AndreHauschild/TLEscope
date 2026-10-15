@@ -2,6 +2,8 @@
 #include "cache.h"
 #include "storage.h"
 #include "util/log.h"
+#include <fstream>
+#include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,10 +39,10 @@ const DataSource CELESTRAK_SOURCES[] = {
     {"weather",            "Weather",                                    CELESTRAK_BASE, PROVIDER_CELESTRAK, FORMAT_OMM_JSON, {0}},
     {"resource",           "Earth Resources",                            CELESTRAK_BASE, PROVIDER_CELESTRAK, FORMAT_OMM_JSON, {0}},
     {"sar",                "Synthetic Aperture Radar",                   CELESTRAK_BASE, PROVIDER_CELESTRAK, FORMAT_OMM_JSON, {0}},
-    {"sarsat",             "Search & Rescue (SARSAT)",                  CELESTRAK_BASE, PROVIDER_CELESTRAK, FORMAT_OMM_JSON, {0}},
+    {"sarsat",             "Search & Rescue (SARSAT)",                   CELESTRAK_BASE, PROVIDER_CELESTRAK, FORMAT_OMM_JSON, {0}},
     {"dmc",                "Disaster Monitoring",                        CELESTRAK_BASE, PROVIDER_CELESTRAK, FORMAT_OMM_JSON, {0}},
     {"tdrss",              "Tracking and Data Relay Satellites (TDRSS)", CELESTRAK_BASE, PROVIDER_CELESTRAK, FORMAT_OMM_JSON, {0}},
-    {"argos",              "ARGOS Data Collection System",              CELESTRAK_BASE, PROVIDER_CELESTRAK, FORMAT_OMM_JSON, {0}},
+    {"argos",              "ARGOS Data Collection System",               CELESTRAK_BASE, PROVIDER_CELESTRAK, FORMAT_OMM_JSON, {0}},
     {"planet",             "Planet",                                     CELESTRAK_BASE, PROVIDER_CELESTRAK, FORMAT_OMM_JSON, {0}},
     {"spire",              "Spire",                                      CELESTRAK_BASE, PROVIDER_CELESTRAK, FORMAT_OMM_JSON, {0}},
 
@@ -344,6 +346,51 @@ static FetchResult http_fetch(const char *url)
     return result;
 }
 
+
+static FetchResult file_fetch(const char *filename)
+{
+    FetchResult result = {0};
+    result.success = false;
+
+    std::ifstream file(filename);
+    if (!file.is_open())
+    {
+      LOG_ERROR("Failed to open TLE file: %s", filename);
+      return result;
+    }
+
+    // Read the entire file into a string
+    std::string content(
+        (std::istreambuf_iterator<char>(file)),
+        std::istreambuf_iterator<char>()
+    );
+
+    if (file.bad())
+    {
+        LOG_ERROR("Failed to read TLE file: %s", filename);
+        return result;
+    }
+
+    // Allocate memory (+1 for the null terminator)
+    result.data = static_cast<char *>(std::malloc(content.size() + 1));
+    if (!result.data)
+    {
+        LOG_ERROR("Failed to allocate memory for TLE file: %s", filename);
+        return result;
+    }
+
+    std::memcpy(result.data, content.data(), content.size());
+    result.data[content.size()] = '\0';
+
+    result.size = content.size();
+    result.format = FORMAT_TLE;  // Adjust to your actual enum value
+    result.http_code = 0;        // Not applicable to a local file
+    result.success = true;
+
+    return result;
+
+}
+
 // -- High-Level Fetch -------------------------------------------------------
 
 FetchResult FetchFromSource(const DataSource *source, OrbitalDataFormat format)
@@ -618,6 +665,33 @@ FetchResult FetchFromCustomURL(const char *url)
         result.format = DetectDataFormat(result.data, result.size);
         LOG_INFO("Custom URL fetch OK: %s (%zu bytes, detected: %s)",
                  url, result.size, FormatToString(result.format));
+    }
+
+    return result;
+}
+
+// -- Custom File Fetch with Auto-Detect --------------------------------------
+
+FetchResult FetchFromCustomFile(const char *filename)
+{
+    FetchResult result = {0};
+    result.success = false;
+
+    if (!filename || !*filename)
+    {
+        LOG_ERROR("FetchFromCustomFile: empty filename");
+        return result;
+    }
+
+    LOG_INFO("Fetching custom file: %s", filename);
+    result = file_fetch(filename);
+
+    if (result.success)
+    {
+        // auto-detect the format
+        result.format = DetectDataFormat(result.data, result.size);
+        LOG_INFO("Custom file fetch OK: %s (%zu bytes, detected: %s)",
+                 filename, result.size, FormatToString(result.format));
     }
 
     return result;
