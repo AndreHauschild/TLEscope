@@ -55,7 +55,7 @@ void LoadAppConfig(const char *filename, AppConfig *config)
     config->tool_settings.count = 0;  // tool-owned settings start empty
 
     config->is_live = true;
-    config->current_epoch = 19571004.0;
+    config->current_epoch = 1957273.0;
 
     // default rotator settings (mirror the static defaults in rotator.cpp)
     {
@@ -614,7 +614,7 @@ void LoadAppConfig(const char *filename, AppConfig *config)
             SetHomeLocation(home_idx);
 
         config->is_live = true;
-    		config->current_epoch = 19571004.0;
+    		config->current_epoch = 1957273.0;
 
         config->show_first_run_dialog = true;
 
