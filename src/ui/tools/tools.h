@@ -37,4 +37,8 @@ void DrawScenePolarPlot(SceneContext *sctx, AppConfig *cfg);
 /* screen-space ImGui overlay hook (runs after rlImGuiBegin, see ui.cpp) */
 void DrawMapGridLabels(UIContext *ctx, AppConfig *cfg);
 
+/* self-defined cubeifier tool */
+void DrawPanelCubeifier(UIContext *ctx, AppConfig *cfg);
+void DrawSceneCubeifier(SceneContext *sctx, AppConfig *cfg);
+
 #endif /* TOOLS_H */
