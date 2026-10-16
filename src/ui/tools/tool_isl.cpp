@@ -137,10 +137,40 @@ const LinkEpoch *linkScheduleFind(const LinkSchedule &schedule, double epoch)
 
 /* Check for Earth masking
  *
- * h_mask : masking height in [km]
+ * Vector3 sat1   : Position vector satellite 1  [km]
+ * Vector3 sat2   : Position vector satellite 2  [km]
+ * double  h_mask : masking height               [km]
  *
- * */
+ */
 bool earthMasking(const Vector3& sat1, const Vector3& sat2, const float h_mask=1000)
+{
+	
+  /* LOS vector */
+  const Vector3 d = Vector3Subtract(sat2,sat1);
+  const float los2 = Vector3DotProduct(d,d);
+
+  /* Parameter t of the closest point on the infinite line
+   * sat1 + t * (sat2 - sat1) to the Earth's center.
+   */
+  const float t = -Vector3DotProduct(sat1,d) / los2;
+
+  /* Closest point must be between sat1 and sat2 */
+  if (t <= 0.0f || t >= 1.0f)
+    return false;
+
+  /*  Closest point on LOS */
+  const Vector3 p = Vector3Add(sat1,Vector3Scale(d,t));
+
+  const float distance2 = Vector3DotProduct(p,p);
+
+  const float distanceMin = (EARTH_RADIUS_KM + h_mask);
+
+  /* Earth intersects the LOS */
+  return distance2 < distanceMin * distanceMin;
+  
+}
+
+bool earthMaskingOld(const Vector3& sat1, const Vector3& sat2, const float h_mask=1000)
 {
   /* LOS vector */
 
