@@ -57,7 +57,8 @@ FileDialog file_dialog_isl;
 
 /* Data functions */
 
-/* Load link schedule file */
+/* Load link schedule file
+ */
 bool linkScheduleRead(const char *filename, LinkSchedule &schedule)
 {
 
@@ -111,7 +112,8 @@ bool linkScheduleRead(const char *filename, LinkSchedule &schedule)
   return !file.bad();
 }
 
-/* Search for links for the current epoch using binary search */
+/* Search for links for the current epoch using binary search
+ */
 const LinkEpoch *linkScheduleFind(const LinkSchedule &schedule, double epoch)
 {
   /*
@@ -144,7 +146,7 @@ const LinkEpoch *linkScheduleFind(const LinkSchedule &schedule, double epoch)
  */
 bool earthMasking(const Vector3& sat1, const Vector3& sat2, const float h_mask=1000)
 {
-	
+
   /* LOS vector */
   const Vector3 d = Vector3Subtract(sat2,sat1);
   const float los2 = Vector3DotProduct(d,d);
@@ -167,7 +169,7 @@ bool earthMasking(const Vector3& sat1, const Vector3& sat2, const float h_mask=1
 
   /* Earth intersects the LOS */
   return distance2 < distanceMin * distanceMin;
-  
+
 }
 
 bool earthMaskingOld(const Vector3& sat1, const Vector3& sat2, const float h_mask=1000)
@@ -218,40 +220,51 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
 
   /* fixed icon width so all checkboxes align vertically */
   const float icon_w = 24.0f;
+  const float avail_w = ImGui::GetContentRegionAvail().x;
 
   auto DrawLayerCheckbox = [&](const char *label, bool *value, const char *icon, const char *tooltip) {
-      ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(*value ? g_theme.ui.accent : g_theme.ui.text_dim));
-      ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
-      /* center the icon within a fixed-width cell so all rows align */
-      ImVec2 icon_sz = ImGui::CalcTextSize(icon);
-      ImVec2 pos = ImGui::GetCursorScreenPos();
-      ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x + (icon_w - icon_sz.x) * 0.5f, pos.y), col, icon);
-      ImGui::PopStyleColor();
-      ImGui::Dummy(ImVec2(icon_w, ImGui::GetFrameHeight()));
-      ImGui::SameLine();
-      ImGui::Checkbox(label, value);
-      if (tooltip && ImGui::IsItemHovered())
-          ImGui::SetTooltip("%s", tooltip);
+    ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(*value ? g_theme.ui.accent : g_theme.ui.text_dim));
+    ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
+    /* center the icon within a fixed-width cell so all rows align */
+    ImVec2 icon_sz = ImGui::CalcTextSize(icon);
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x + (icon_w - icon_sz.x) * 0.5f, pos.y), col, icon);
+    ImGui::PopStyleColor();
+    ImGui::Dummy(ImVec2(icon_w, ImGui::GetFrameHeight()));
+    ImGui::SameLine();
+    ImGui::Checkbox(label, value);
+    if (tooltip && ImGui::IsItemHovered())
+      ImGui::SetTooltip("%s", tooltip);
   };
 
   bool showIsl = ToolSettingGetBool(cfg, "isl.enabled", false);
   bool prev = showIsl;
   DrawLayerCheckbox("ISL Range", &showIsl, ICON_FA_ARROW_RIGHT_ARROW_LEFT,
-                    "Show a ISL range line from all satellites (or one selected) to active satellites (3D only)");
+      "Show a ISL range connection based on a scheduler file (3D only)");
   if (showIsl!=prev)
     ToolSettingSetBool(cfg, "isl.enabled", showIsl);
-  ImGui::SameLine();
 
-  if (ImGui::Button("Open file"))
+  static char s_file_buf[512] = "";
+  ImGui::SetNextItemWidth(avail_w - icon_w - ImGui::GetStyle().ItemSpacing.x);
+  ImGui::InputText("##scheduler_file", s_file_buf, sizeof(s_file_buf));
+
+  ImGui::SameLine();
+  if (ImGui::Button(ICON_FA_FOLDER "##select_scheduler_file",ImVec2(icon_w, icon_w)))
   {
-    char *home = std::getenv("HOME");
-    std::string initialPath = (home? std::string(home)+ "/GNSS_DAT/TLE" : ".");
-    file_dialog_isl.open(initialPath);
+    const char* home = std::getenv("HOME");
+    file_dialog_isl.open(std::string((home ? home : "")));
+
   }
-  if (file_dialog_isl.draw())
+  if (file_dialog_isl.isOpen())
   {
-    LOG_INFO("Opening ISL schedule file: %s",file_dialog_isl.fileName().c_str());
-    linkScheduleRead(file_dialog_isl.fileName().c_str(), schedule);
+    if (file_dialog_isl.draw())
+    {
+      LOG_INFO("Opening ISL schedule file: %s",file_dialog_isl.fileName().c_str());
+
+      linkScheduleRead(file_dialog_isl.fileName().c_str(), schedule);
+
+      std::snprintf(s_file_buf, sizeof(s_file_buf), "%s", file_dialog_isl.fileName().c_str());
+    }
   }
 
 }
