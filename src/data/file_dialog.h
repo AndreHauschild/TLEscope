@@ -6,9 +6,9 @@
  * @brief File selection dialog
  *
  * A simple file selection dialog
- * 
+ *
  */
- 
+
 #include <string>
 #include <filesystem>
 
@@ -28,13 +28,16 @@ class FileDialog
 
   private:
 
-    void setDirectory(const std::filesystem::path& path);
+      void setDirectory(const std::filesystem::path& path);
 
-    bool open_ = false;
+      bool open_ = false;
 
-    std::filesystem::path currentDirectory_;
-    std::string fileName_;
-    std::string fileNameSelected_;
+      std::filesystem::path currentDirectory_;
+      std::filesystem::path lastSelectedDirectory_;
+
+      std::string fileName_;
+      std::string fileNameSelected_;
+
 };
 
 #endif // FILE_DIALOG_H
