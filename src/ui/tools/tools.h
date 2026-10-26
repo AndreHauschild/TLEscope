@@ -38,11 +38,13 @@ void SimScanCancel(void);
 void DrawPanelLog(UIContext *ctx, AppConfig *cfg);
 void DrawPanelTrxdb(UIContext *ctx, AppConfig *cfg);
 void DrawPanelExample(UIContext *ctx, AppConfig *cfg); /* reference example tool */
+void DrawPanelIsl(UIContext *ctx, AppConfig *cfg);
 
 /* scene hooks (draw into the 3D globe / 2D map, see tools_scene.h) */
 void DrawSceneLayers(SceneContext *sctx, AppConfig *cfg);
 void DrawScenePolarPlot(SceneContext *sctx, AppConfig *cfg);
 void DrawSceneTransit(SceneContext *sctx, AppConfig *cfg);
+void DrawSceneIsl(SceneContext *sctx, AppConfig *cfg);
 
 /* screen-space ImGui overlay hook (runs after rlImGuiBegin, see ui.cpp) */
 void DrawMapGridLabels(UIContext *ctx, AppConfig *cfg);

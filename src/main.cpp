@@ -65,6 +65,8 @@ static AppConfig cfg = []() -> AppConfig {
     c.show_scattering = false;
     c.hint_vsync = false;
     c.night_mode = false;
+    c.is_live = true;
+    c.current_epoch = 19571004.0;
     return c;
 }();
 
@@ -77,7 +79,7 @@ static Model earthModel, moonModel, cloudModel, atmosphereModel, skyboxModel;
 static struct {
     Shader shader3D;
     Shader shader2D;
-    
+
     /* Uniform locations for 3D shader */
     int satPosLoc;
     int colorLoc;
@@ -85,7 +87,7 @@ static struct {
     int depthBiasLoc;
     int edgeFalloffLoc;
     int cameraPosLoc;
-    
+
     /* Uniform locations for 2D shader */
     int colorLoc2D;
     int borderColorLoc2D;
@@ -1013,18 +1015,18 @@ int main(void)
     LOG_INFO("Compiling ground coverage shaders...");
     g_coverage_shaders.shader3D = LoadShaderFromMemory(CoverageShaders::vsCoverage3D, CoverageShaders::fsCoverage3D);
     g_coverage_shaders.shader2D = LoadShaderFromMemory(NULL, CoverageShaders::fsCoverage2D);
-    
+
     g_coverage_shaders.satPosLoc = GetShaderLocation(g_coverage_shaders.shader3D, "satPosition");
     g_coverage_shaders.colorLoc = GetShaderLocation(g_coverage_shaders.shader3D, "coverageColor");
     g_coverage_shaders.borderColorLoc = GetShaderLocation(g_coverage_shaders.shader3D, "borderColor");
     g_coverage_shaders.depthBiasLoc = GetShaderLocation(g_coverage_shaders.shader3D, "depthBias");
     g_coverage_shaders.edgeFalloffLoc = GetShaderLocation(g_coverage_shaders.shader3D, "edgeFalloff");
     g_coverage_shaders.cameraPosLoc = GetShaderLocation(g_coverage_shaders.shader3D, "cameraPos");
-    
+
     g_coverage_shaders.colorLoc2D = GetShaderLocation(g_coverage_shaders.shader2D, "coverageColor");
     g_coverage_shaders.borderColorLoc2D = GetShaderLocation(g_coverage_shaders.shader2D, "borderColor");
     g_coverage_shaders.edgeFalloffLoc2D = GetShaderLocation(g_coverage_shaders.shader2D, "edgeFalloff");
-    
+
     /* Set static uniforms */
     float depthBias = 0.00001f;
     /* Hard, crisp edge by default (0 = pure ~1 px fwidth()-based anti-aliasing). */
@@ -1079,7 +1081,8 @@ int main(void)
     TargetLock track_follow_lock = LOCK_NONE;
     Satellite *track_follow_sat = NULL;
 
-    double current_epoch = get_current_real_time_epoch();
+    double current_epoch = (cfg.is_live? get_current_real_time_epoch() : cfg.current_epoch);
+
     double time_multiplier = 1.0;
     double saved_multiplier = 1.0;
     bool is_2d_view = false;
@@ -1117,7 +1120,7 @@ int main(void)
         ClearWindowState(FLAG_VSYNC_HINT);
         SetTargetFPS(cfg.target_fps);
     }
-    
+
     int current_update_idx = 0;
 
     /* main loop */
@@ -1248,7 +1251,7 @@ int main(void)
                     NotifyPush(NOTIFY_INFO, ICON_FA_PLAY, "Time resumed");
                 }
             }
-            
+
             static double warp_hold_start = 0.0;
             static double last_warp_step = 0.0;
             bool step_fwd = false;
@@ -1423,7 +1426,7 @@ int main(void)
                 if (satellites[current_update_idx].is_active)
                 {
                     // only update if satellite drifted
-                    if (!is_orbit_cache_valid(&satellites[current_update_idx], 
+                    if (!is_orbit_cache_valid(&satellites[current_update_idx],
                                               satellites[current_update_idx].current_pos,
                                               cfg.orbit_cache_drift_threshold_km))
                     {
@@ -1552,7 +1555,7 @@ int main(void)
                 LOG_INFO("VSync disabled, target FPS: %d", cfg.target_fps);
             }
         }
-        
+
         /* 2D picking/camera */
         if (is_2d_view)
         {
@@ -1661,7 +1664,7 @@ int main(void)
             {
                 float rot_speed = 1.5f * GetFrameTime();
                 bool moved = false;
-                
+
                 if (is_pov_mode && selected_sat && selected_sat->is_active)
                 {
                     if (IsKeyDown(KEY_RIGHT)) { target_camAngleX -= rot_speed; moved = true; }
@@ -1711,7 +1714,7 @@ int main(void)
                         {
                             Vector3 closest_on_ray = Vector3Scale(mouseRay.direction, proj);
                             float distToRaySqr = Vector3DistanceSqr(to_sat, closest_on_ray);
-                            
+
                             float hit_radius_sqr = 0.000225f * distToCamSqr * (cfg.ui_scale * cfg.ui_scale);
 
                             if (distToRaySqr < hit_radius_sqr && proj < closest_dist)
@@ -1993,13 +1996,13 @@ int main(void)
         {
             Vector3 sat_pos_3d = Vector3Scale(selected_sat->current_pos, 1.0f / DRAW_SCALE);
             Camera3DParams.position = sat_pos_3d;
-            
+
             /* create an LVLH local coordinate frame */
             double t_unix = get_unix_from_epoch(current_epoch);
             Vector3 vel = Vector3Normalize(calculate_velocity(selected_sat, t_unix));
-            
+
             Vector3 nadir = Vector3Normalize(Vector3Negate(sat_pos_3d));
-            
+
             Vector3 right = Vector3Normalize(Vector3CrossProduct(vel, nadir));
             Vector3 fwd = Vector3Normalize(Vector3CrossProduct(nadir, right));
             Vector3 up = Vector3Negate(nadir);
@@ -2009,19 +2012,19 @@ int main(void)
             float sy = sinf(camAngleX);
             float cp = cosf(-camAngleY);
             float sp = sinf(-camAngleY);
-            
+
             Vector3 local_look = { cp * sy, sp, cp * cy };
             Vector3 look_dir = Vector3Add(
                 Vector3Add(Vector3Scale(right, local_look.x), Vector3Scale(up, local_look.y)),
                 Vector3Scale(fwd, local_look.z)
             );
-            
+
             Vector3 local_right = { cy, 0.0f, -sy };
             Vector3 world_right = Vector3Add(
                 Vector3Scale(right, local_right.x),
                 Vector3Scale(fwd, local_right.z)
             );
-            
+
             /* up is down, down is up */
             Vector3 upVec = Vector3Normalize(Vector3CrossProduct(look_dir, world_right));
 
@@ -2182,7 +2185,7 @@ int main(void)
                             float cx, cy;
                             get_map_coordinates(sat->current_pos, gmst_deg, cfg.earth_rotation_offset, map_w, map_h, &cx, &cy);
 
- 
+
                             float phi_c = acosf(fminf(fmaxf(s_norm.y, -1.0f), 1.0f));
                             float dlon_max = PI;
                             if (phi_c >= theta && phi_c <= PI - theta)
@@ -2705,7 +2708,7 @@ int main(void)
         Viewport3DApplyGL();
         BeginMode3D(Camera3DParams);
         Viewport3DFixProjection(Camera3DParams);
-        
+
         if (cfg.show_skybox)
         {
             DrawModel(skyboxModel, Camera3DParams.position, 1.0f, WHITE);
@@ -2716,7 +2719,7 @@ int main(void)
         Vector3 sunEcef = Vector3Transform(sunEci, MatrixRotateY(-earth_rot_rad));
         Vector3 moonEcef = Vector3Transform(draw_moon_pos, MatrixRotateY(-earth_rot_rad));
         Vector3 viewEcef = Vector3Transform(Camera3DParams.position, MatrixRotateY(-earth_rot_rad));
-        
+
         earthModel.transform = MatrixRotateY(earth_rot_rad);
 
         double continuous_cloud_angle = fmod(gmst_deg + cfg.earth_rotation_offset + (current_epoch * 360.0 * 0.04), 360.0);
@@ -2727,11 +2730,11 @@ int main(void)
             earthModel.materials[0].shader = shader3D;
             SetShaderValue(shader3D, sunDirLoc3D, &sunEcef, SHADER_UNIFORM_VEC3);
             SetShaderValue(shader3D, moonPosLoc3D, &moonEcef, SHADER_UNIFORM_VEC3);
-            
+
             int doAdvScat = cfg.show_scattering ? 1 : 0;
             SetShaderValue(shader3D, advScatLoc3D, &doAdvScat, SHADER_UNIFORM_INT);
             SetShaderValue(shader3D, viewPosLoc3D, &viewEcef, SHADER_UNIFORM_VEC3);
-            
+
             float uv_offset = (earth_rot_rad - cloud_rot_rad) / (2.0f * PI);
             SetShaderValue(shader3D, cloudUVOffsetLoc3D, &uv_offset, SHADER_UNIFORM_FLOAT);
 
@@ -2820,11 +2823,11 @@ int main(void)
             {
                 SetShaderValue(g_coverage_shaders.shader3D, g_coverage_shaders.cameraPosLoc,
                                &Camera3DParams.position, SHADER_UNIFORM_VEC3);
-                
+
                 /* static: keeps this large buffer off the stack */
                 static Satellite *visible_sats[MAX_SATELLITES_HARD_CAP];
                 int visible_count = 0;
-                
+
                 if (gc_mode == LAYERS_GC_MODE_ALL)
                 {
                     for (int i = 0; i < sat_count; i++)
@@ -2877,7 +2880,7 @@ int main(void)
                         visible_sats[visible_count++] = hovered_sat;
                     }
                 }
-                
+
                 std::sort(visible_sats, visible_sats + visible_count, [&](Satellite *a, Satellite *b) {
                     auto rank = [&](Satellite *s) -> int {
                         if (s == selected_sat) return 2; /* selected draws last */
@@ -2894,29 +2897,29 @@ int main(void)
                                                    Vector3Scale(b->current_pos, 1.0f/DRAW_SCALE));
                     return dist_a > dist_b;  // Farther first
                 });
-                
+
                 /* Disable depth writes for proper alpha blending */
                 rlDisableDepthMask();
                 rlSetBlendMode(BLEND_ALPHA);
-                
+
                 for (int i = 0; i < visible_count; i++)
                 {
                     Satellite *sat = visible_sats[i];
-                    
+
                     float theta, radius;
                     CalculateCoverageParams(sat, &theta, &radius);
                     if (theta <= 0.0f) continue;
-                    
+
                     CoverageMeshLOD lod = SelectCoverageLOD(sat, Camera3DParams);
-                    
+
                     float altitude_km = Vector3Length(sat->current_pos) - EARTH_RADIUS_KM;
                     Model *coverage_model = GetCachedCoverageMesh(altitude_km, lod, g_coverage_shaders.shader3D);
-                    
+
                     /* mesh is an Earth-centred cap; shader reorients it from this pos */
                     Vector3 sat_pos_draw = Vector3Scale(sat->current_pos, 1.0f / DRAW_SCALE);
                     SetShaderValue(g_coverage_shaders.shader3D, g_coverage_shaders.satPosLoc,
                                    &sat_pos_draw, SHADER_UNIFORM_VEC3);
-                    
+
                     /* selection tint wins over hover when both apply */
                     Color fill_col   = g_theme.world.footprint_fill;
                     Color border_col = g_theme.world.footprint_border;
@@ -2948,10 +2951,10 @@ int main(void)
                     };
                     SetShaderValue(g_coverage_shaders.shader3D, g_coverage_shaders.borderColorLoc,
                                    &border, SHADER_UNIFORM_VEC4);
-                    
+
                     DrawModel(*coverage_model, Vector3Zero(), 1.0f, WHITE);
                 }
-                
+
                 rlEnableDepthMask();
             }
 
@@ -3150,7 +3153,7 @@ int main(void)
                         {
                             if (active_sat == &satellites[i])
                             {
-                                sCol = g_theme.world.orbit_active;
+                                sCol = g_theme.world.sat_selected;
                             }
                             else
                             {
@@ -3170,7 +3173,7 @@ int main(void)
                                 if (!matched_favorite &&
                                     (&satellites[i] == selected_sat || orbits_dimmed))
                                 {
-                                    sCol = g_theme.world.orbit;
+                                    sCol = g_theme.world.sat;
                                 }
                             }
                         }
@@ -3407,6 +3410,11 @@ int main(void)
     UnloadShader(g_coverage_shaders.shader3D);
     UnloadShader(g_coverage_shaders.shader2D);
     UnloadFont(customFont);
+
+    /* Save time related configurations */
+    double drift_sec = fabs(current_epoch - get_current_real_time_epoch()) * 86400.0;
+    cfg.is_live = (!is_auto_warping && time_multiplier == 1.0 && drift_sec<5.0);
+    cfg.current_epoch = current_epoch;
 
     /* persist layout state before shutdown */
     LayoutFillPersist(&cfg.ui_layout);

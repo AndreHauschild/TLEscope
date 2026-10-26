@@ -127,8 +127,15 @@ static int parse_payload(const AsyncFetchJob *job, const char *data, size_t size
         }
 
         case ASYNC_JOB_CUSTOM_URL:
+        case ASYNC_JOB_CUSTOM_FILE:
         {
-            FetchResult result = FetchFromCustomURL(job->identifier);
+            FetchResult result;
+
+            if(job->type==ASYNC_JOB_CUSTOM_URL)
+	            result = FetchFromCustomURL(job->identifier);
+	          else
+	          	result = FetchFromCustomFile(job->identifier);
+
             if (result.success)
             {
                 if (result.format == FORMAT_TLE)
@@ -172,6 +179,7 @@ static int parse_payload(const AsyncFetchJob *job, const char *data, size_t size
             }
             return count;
         }
+
     }
 
     return count;

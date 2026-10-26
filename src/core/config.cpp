@@ -61,6 +61,9 @@ void LoadAppConfig(const char *filename, AppConfig *config)
     config->has_saved_selection = false;
     config->tool_settings.count = 0;  // tool-owned settings start empty
 
+    config->is_live = true;
+    config->current_epoch = 1957273.0;
+
     // default rotator settings (mirror the static defaults in rotator.cpp)
     {
         RotatorSettings *R = &config->rotator_settings;
@@ -208,6 +211,9 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                     config->show_tutorial = get_bool("show_tutorial", config->show_tutorial);
                     config->use_local_time = get_bool("use_local_time", config->use_local_time);
                     config->night_mode = get_bool("night_mode", config->night_mode);
+
+                    config->is_live = get_bool("is_live", config->is_live);
+                    config->current_epoch = get_float("current_epoch", config->current_epoch);
 
                     // load manual orbital data entries
                     auto me = root.find("manual_entries");
@@ -625,6 +631,9 @@ void LoadAppConfig(const char *filename, AppConfig *config)
 
         config->show_tutorial = true;
 
+        config->is_live = true;
+        config->current_epoch = 1957273.0;
+
         SaveAppConfig(filename, config);
     }
 
@@ -688,6 +697,9 @@ void SaveAppConfig(const char *filename, AppConfig *config)
     root["network_timeout_seconds"] = config->network_timeout_seconds;
     root["max_satellites"] = config->max_satellites;
     root["prop_use_short_period"] = config->prop_use_short_period;
+
+    root["is_live"] = config->is_live;
+    root["current_epoch"] = config->current_epoch;
 
     if (config->custom_data_source_count > 0)
     {
