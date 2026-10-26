@@ -381,9 +381,6 @@ typedef struct
     bool night_mode;       // full-screen monochrome-red post-process for dark adaptation
     int first_day_of_week; // first day of the week in date pickers: 0 = Sunday, 1 = Monday (default)
 
-    bool is_live;
-    double current_epoch;
-
     bool prop_use_short_period;   // include J2 short-period terms in the cheap path (default true)
 
     RotatorSettings rotator_settings;  // persisted rotator connection config

@@ -65,8 +65,6 @@ static AppConfig cfg = []() -> AppConfig {
     c.show_scattering = false;
     c.hint_vsync = false;
     c.night_mode = false;
-    c.is_live = true;
-    c.current_epoch = 19571004.0;
     return c;
 }();
 
@@ -1081,7 +1079,7 @@ int main(void)
     TargetLock track_follow_lock = LOCK_NONE;
     Satellite *track_follow_sat = NULL;
 
-    double current_epoch = (cfg.is_live? get_current_real_time_epoch() : cfg.current_epoch);
+    double current_epoch = get_current_real_time_epoch();
 
     double time_multiplier = 1.0;
     double saved_multiplier = 1.0;
@@ -3410,11 +3408,6 @@ int main(void)
     UnloadShader(g_coverage_shaders.shader3D);
     UnloadShader(g_coverage_shaders.shader2D);
     UnloadFont(customFont);
-
-    /* Save time related configurations */
-    double drift_sec = fabs(current_epoch - get_current_real_time_epoch()) * 86400.0;
-    cfg.is_live = (!is_auto_warping && time_multiplier == 1.0 && drift_sec<5.0);
-    cfg.current_epoch = current_epoch;
 
     /* persist layout state before shutdown */
     LayoutFillPersist(&cfg.ui_layout);
