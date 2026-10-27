@@ -3,10 +3,49 @@
 #include "imgui.h"
 
 #include <algorithm>
+#include <cstdlib>   // std::getenv
+#include <cctype>    // std::tolower
 #include <system_error>
 #include <vector>
 
+#ifdef _WIN32
+    // nothing extra needed
+#else
+    #include <pwd.h>
+    #include <unistd.h>
+#endif
+
 namespace fs = std::filesystem;
+
+
+std::string getHomeDirectory()
+{
+#ifdef _WIN32
+    if (const char* profile = std::getenv("USERPROFILE"))
+        return profile;
+
+    const char* drive = std::getenv("HOMEDRIVE");
+    const char* path  = std::getenv("HOMEPATH");
+    if (drive && path)
+        return std::string(drive) + path;
+#else
+    // Linux and macOS
+    if (const char* home = std::getenv("HOME"))
+    {
+        if (*home != '\0')
+            return home;
+    }
+
+    // Fallback: ask the user database
+    if (const passwd* pw = getpwuid(getuid()))
+    {
+        if (pw->pw_dir && *pw->pw_dir != '\0')
+            return pw->pw_dir;
+    }
+#endif
+
+    return ".";
+}
 
 void FileDialog::open(const std::string& initialPath)
 {
@@ -95,12 +134,7 @@ bool FileDialog::draw()
         ImGui::SameLine();
 
         if (ImGui::Button("Home"))
-        {
-            const char* home = std::getenv("HOME");
-
-            if (home)
-                setDirectory(home);
-        }
+            setDirectory(getHomeDirectory());
 
         ImGui::Separator();
 

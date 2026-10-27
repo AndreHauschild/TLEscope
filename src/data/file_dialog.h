@@ -12,6 +12,8 @@
 #include <string>
 #include <filesystem>
 
+static std::string getHomeDirectory();
+
 class FileDialog
 {
   public:
