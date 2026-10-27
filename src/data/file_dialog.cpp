@@ -3,20 +3,37 @@
 #include "imgui.h"
 
 #include <algorithm>
-#include <cstdlib>   // std::getenv
 #include <cctype>    // std::tolower
+#include <cstdio>
+#include <cstdlib>   // std::getenv
 #include <system_error>
-#include <vector>
-
 #ifdef _WIN32
     // nothing extra needed
 #else
     #include <pwd.h>
     #include <unistd.h>
 #endif
+#ifdef _WIN32
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #include <windows.h>
+#endif
 
 namespace fs = std::filesystem;
 
+namespace
+{
+    std::string toLower(std::string s)
+    {
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return s;
+    }
+}
 
 std::string getHomeDirectory()
 {
@@ -46,6 +63,11 @@ std::string getHomeDirectory()
 
     return ".";
 }
+
+FileDialog::FileDialog(std::string filterText)
+{
+    setFilter(filterText);
+};
 
 void FileDialog::open(const std::string& initialPath)
 {
@@ -136,13 +158,16 @@ bool FileDialog::draw()
         if (ImGui::Button("Home"))
             setDirectory(getHomeDirectory());
 
+        ImGui::SameLine();
+        ImGui::Checkbox("Show hidden files", &showHidden_);
+
         ImGui::Separator();
 
         // ------------------------------------------------------------
         // Directory / file list
         // ------------------------------------------------------------
 
-        if (ImGui::BeginChild("FileList",ImVec2(0, -80),ImGuiChildFlags_Borders))
+        if (ImGui::BeginChild("FileList", ImVec2(0, -80), ImGuiChildFlags_Borders))
         {
             std::vector<fs::directory_entry> entries;
             std::error_code ec;
@@ -151,6 +176,10 @@ bool FileDialog::draw()
             {
                 if (ec)
                     break;
+
+                if (!showHidden_ && isHidden(entry.path()))
+                    continue;
+
                 entries.push_back(entry);
             }
 
@@ -179,21 +208,8 @@ bool FileDialog::draw()
                 }
                 else
                 {
-                    // Only show files useful for TLEscope.
-                    std::string extension = path.extension().string();
-
-                    std::transform(extension.begin(),extension.end(),extension.begin(),
-                            [](unsigned char c)
-                            {
-                                return std::tolower(c);
-                            });
-
-                    /*
-                    if (extension != ".tle" && extension != ".3le" && extension != ".txt")
-                    {
+                    if (!matchesFilter(path))
                         continue;
-                    }
-                    */
 
                     bool selected = fileName_ == name;
                     if (ImGui::Selectable(name.c_str(),selected))
@@ -215,6 +231,7 @@ bool FileDialog::draw()
             }
 
             ImGui::EndChild();
+
         }
 
         // ------------------------------------------------------------
@@ -266,8 +283,90 @@ bool FileDialog::draw()
             ImGui::CloseCurrentPopup();
         }
 
+        // ------------------------------------------------------------
+        // File filter
+        // ------------------------------------------------------------
+
+        ImGui::Text("Filter:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-1);
+
+        char filterBuffer[256];
+        std::snprintf(filterBuffer, sizeof(filterBuffer), "%s", filterText_.c_str());
+
+        if (ImGui::InputTextWithHint("##filter",
+                                     "e.g. .tle, .3le, .txt  (empty or * = all files)",
+                                     filterBuffer, sizeof(filterBuffer)))
+        {
+            filterText_ = filterBuffer;
+            parseFilter();
+        }
+
         ImGui::EndPopup();
     }
 
     return result;
+}
+
+void FileDialog::parseFilter()
+{
+    extensions_.clear();
+
+    std::string token;
+    std::vector<std::string> tokens;
+
+    // Split on commas, semicolons and whitespace
+    for (char c : filterText_ + ",")
+    {
+        if (c == ',' || c == ';' || std::isspace(static_cast<unsigned char>(c)))
+        {
+            if (!token.empty())
+                tokens.push_back(token);
+            token.clear();
+        }
+        else
+        {
+            token += c;
+        }
+    }
+
+    for (std::string t : tokens)
+    {
+        // Accept "*.tle", ".tle" and "tle"
+        while (!t.empty() && t.front() == '*')
+            t.erase(t.begin());
+
+        // "*" or "*.*" means: show everything
+        if (t.empty() || t == "." || t == ".*")
+        {
+            extensions_.clear();
+            return;
+        }
+
+        if (t.front() != '.')
+            t.insert(t.begin(), '.');
+
+        extensions_.push_back(toLower(t));
+    }
+}
+
+bool FileDialog::matchesFilter(const fs::path& path) const
+{
+    if (extensions_.empty())
+        return true;
+
+    const std::string ext = toLower(path.extension().string());
+    return std::find(extensions_.begin(), extensions_.end(), ext) != extensions_.end();
+}
+
+bool FileDialog::isHidden(const fs::path& path)
+{
+#ifdef _WIN32
+    const DWORD attrs = GetFileAttributesW(path.c_str());
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_HIDDEN);
+#else
+    // Linux and macOS: dot-files are hidden
+    const std::string name = path.filename().string();
+    return name.size() > 1 && name[0] == '.';
+#endif
 }
