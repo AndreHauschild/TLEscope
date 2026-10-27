@@ -3,9 +3,7 @@
 #include "imgui.h"
 
 #include <algorithm>
-#include <cctype>    // std::tolower
 #include <cstdio>
-#include <cstdlib>   // std::getenv
 #include <system_error>
 #ifdef _WIN32
     // nothing extra needed
@@ -23,45 +21,13 @@
     #include <windows.h>
 #endif
 
-namespace fs = std::filesystem;
-
-namespace
+std::string toLower(std::string s)
 {
-    std::string toLower(std::string s)
+    for(unsigned int i=0;i<s.length();i++)
     {
-        std::transform(s.begin(), s.end(), s.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        return s;
-    }
-}
-
-std::string getHomeDirectory()
-{
-#ifdef _WIN32
-    if (const char* profile = std::getenv("USERPROFILE"))
-        return profile;
-
-    const char* drive = std::getenv("HOMEDRIVE");
-    const char* path  = std::getenv("HOMEPATH");
-    if (drive && path)
-        return std::string(drive) + path;
-#else
-    // Linux and macOS
-    if (const char* home = std::getenv("HOME"))
-    {
-        if (*home != '\0')
-            return home;
-    }
-
-    // Fallback: ask the user database
-    if (const passwd* pw = getpwuid(getuid()))
-    {
-        if (pw->pw_dir && *pw->pw_dir != '\0')
-            return pw->pw_dir;
-    }
-#endif
-
-    return ".";
+      s[i] = std::tolower(s[i]);
+    };
+    return s;
 }
 
 FileDialog::FileDialog(std::string filterText)
@@ -80,7 +46,7 @@ void FileDialog::open(const std::string& initialPath)
     }
     else if (initialPath.empty())
     {
-        currentDirectory_ = fs::current_path();
+        currentDirectory_ = getHomeDirectory();
     }
     else
     {
@@ -105,17 +71,6 @@ void FileDialog::open(const std::string& initialPath)
     open_ = true;
 
     ImGui::OpenPopup("Open File");
-}
-
-void FileDialog::setDirectory(const fs::path& path)
-{
-    std::error_code ec;
-
-    if (fs::is_directory(path, ec))
-    {
-        currentDirectory_ = path.lexically_normal();
-        fileName_.clear();
-    }
 }
 
 bool FileDialog::draw()
@@ -306,6 +261,46 @@ bool FileDialog::draw()
     }
 
     return result;
+}
+
+std::string FileDialog::getHomeDirectory() const
+{
+#ifdef _WIN32
+    if (const char* profile = std::getenv("USERPROFILE"))
+        return profile;
+
+    const char* drive = std::getenv("HOMEDRIVE");
+    const char* path  = std::getenv("HOMEPATH");
+    if (drive && path)
+        return std::string(drive) + path;
+#else
+    // Linux and macOS
+    if (const char* home = std::getenv("HOME"))
+    {
+        if (*home != '\0')
+            return home;
+    }
+
+    // Fallback: ask the user database
+    if (const passwd* pw = getpwuid(getuid()))
+    {
+        if (pw->pw_dir && *pw->pw_dir != '\0')
+            return pw->pw_dir;
+    }
+#endif
+
+    return ".";
+}
+
+void FileDialog::setDirectory(const fs::path& path)
+{
+    std::error_code ec;
+
+    if (fs::is_directory(path, ec))
+    {
+        currentDirectory_ = path.lexically_normal();
+        fileName_.clear();
+    }
 }
 
 void FileDialog::parseFilter()

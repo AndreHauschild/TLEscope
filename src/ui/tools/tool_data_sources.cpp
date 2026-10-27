@@ -362,8 +362,7 @@ void DrawPanelDataSources(UIContext *ctx, AppConfig *cfg)
 
         if (ImGui::Button(ICON_FA_FOLDER "##select_custom_file",ImVec2(file_btn_w, file_btn_w)))
         {
-            const char* home = std::getenv("HOME");
-            g_ui.file_dialog_tle.open(std::string(home ? home : "."));
+            g_ui.file_dialog_tle.open();
         }
         if (g_ui.file_dialog_tle.isOpen())
         {
