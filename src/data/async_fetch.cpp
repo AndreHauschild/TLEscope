@@ -181,7 +181,6 @@ static int parse_payload(const AsyncFetchJob *job, const char *data, size_t size
             }
             return count;
         }
-
     }
 
     return count;
