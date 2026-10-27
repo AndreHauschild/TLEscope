@@ -42,26 +42,35 @@ struct LinkEpoch
     std::vector<LinkPair> links;
 };
 
-struct LinkSchedule
+/* Link schedule: a list of ISL links ordered by epoch */
+
+class LinkSchedule
 {
-    std::vector<LinkEpoch> epochs;
+  public:
+
+    /* Load link schedule file. Returns false on error; the schedule is
+     * empty in that case. */
+    bool read(const std::string &filename);
+
+    /* Find the links for the given epoch using binary search.
+     * Returns nullptr if the epoch is outside the schedule. */
+    const LinkEpoch *find(double epoch) const;
+
+    void clear() { epochs_.clear(); }
+    bool empty() const { return epochs_.empty(); }
+    std::size_t size() const { return epochs_.size(); }
+
+    /* First/last epoch in the schedule (only valid if !empty()) */
+    double firstEpoch() const { return epochs_.front().epoch; }
+    double lastEpoch() const { return epochs_.back().epoch; }
+
+  private:
+
+    std::vector<LinkEpoch> epochs_;
 };
 
-/* Link schedule object */
-
-LinkSchedule schedule;
-
-/* File dialog object */
-
-FileDialog file_dialog_isl = FileDialog(".txt");
-
-/* Data functions */
-
-/* Load link schedule file
- */
-bool linkScheduleRead(const char *filename, LinkSchedule &schedule)
+bool LinkSchedule::read(const std::string &filename)
 {
-
     std::ifstream file(filename);
 
     if (!file.is_open())
@@ -70,71 +79,74 @@ bool linkScheduleRead(const char *filename, LinkSchedule &schedule)
         return false;
     }
 
-    schedule.epochs.clear();
+    epochs_.clear();
 
-    double        epoch;
-    unsigned int  numLinks;
+    double       epoch;
+    unsigned int numLinks;
 
     while (file >> epoch >> numLinks)
     {
-
         LinkEpoch entry;
         entry.epoch = epoch;
         entry.links.reserve(numLinks);
 
         for (std::size_t i = 0; i < numLinks; ++i)
         {
-
             unsigned int norad1;
             unsigned int norad2;
 
             if (!(file >> norad1 >> norad2))
             {
-                LOG_ERROR("cannot read link pair at epoch %9.3f",epoch);
-                schedule.epochs.clear();
+                LOG_ERROR("cannot read link pair at epoch %9.3f", epoch);
+                epochs_.clear();
                 return false;
             }
 
-            entry.links.push_back({norad1,norad2});
+            entry.links.push_back({norad1, norad2});
         }
 
         /* Make sure the input file is ordered by epoch. */
-        if (!schedule.epochs.empty() && epoch < schedule.epochs.back().epoch)
+        if (!epochs_.empty() && epoch < epochs_.back().epoch)
         {
             LOG_ERROR("schedule is not sorted by epoch");
-            schedule.epochs.clear();
+            epochs_.clear();
             return false;
         }
 
-        schedule.epochs.push_back(std::move(entry));
+        epochs_.push_back(std::move(entry));
     }
 
-    return !file.bad();
-}
-
-/* Search for links for the current epoch using binary search
- */
-const LinkEpoch *linkScheduleFind(const LinkSchedule &schedule, double epoch)
-{
-    /*
-     * std::lower_bound performs a binary search.
-     *
-     * It returns the first element whose epoch is < the requested epoch.
-     */
-    auto it = std::lower_bound(schedule.epochs.begin(), schedule.epochs.end(), epoch,
-            [](const LinkEpoch &entry, double epoch){ return entry.epoch < epoch; });
-
-    /* NOTE: the first test is false for empty vector, so the others are not evaluated
-     * in this case preventing a segmentation fault!
-     */
-    if (it != schedule.epochs.end() &&
-        epoch>=(schedule.epochs.front()).epoch && epoch<=(schedule.epochs.back()).epoch)
+    if (file.bad())
     {
-        return &(*it);
+        epochs_.clear();
+        return false;
     }
 
-    return nullptr;
+    return true;
 }
+
+const LinkEpoch *LinkSchedule::find(double epoch) const
+{
+    /* Empty schedule or epoch outside the covered range */
+    if (epochs_.empty() || epoch < epochs_.front().epoch || epoch > epochs_.back().epoch)
+        return nullptr;
+
+    /* std::lower_bound performs a binary search. It returns the first
+     * element whose epoch is >= the requested epoch. Because of the range
+     * check above, the result is always a valid element. */
+    auto it = std::lower_bound(epochs_.begin(), epochs_.end(), epoch,
+            [](const LinkEpoch &entry, double e) { return entry.epoch < e; });
+
+    return (it != epochs_.end()) ? &(*it) : nullptr;
+}
+
+/* Link schedule object */
+
+static LinkSchedule schedule;
+
+/* File dialog object */
+
+FileDialog file_dialog_isl = FileDialog(".txt");
 
 
 /* Check for Earth masking
@@ -251,22 +263,21 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     ImGui::SameLine();
     if (ImGui::Button(ICON_FA_FOLDER "##select_scheduler_file",ImVec2(icon_w, icon_w)))
     {
-        const char* home = std::getenv("HOME");
-        file_dialog_isl.open(std::string((home ? home : "")));
+        file_dialog_isl.open();
     }
     if (file_dialog_isl.isOpen() && file_dialog_isl.draw())
     {
-        LOG_INFO("Opening ISL schedule file: %s",file_dialog_isl.fileName().c_str());
+        LOG_INFO("Opening ISL schedule file: %s", file_dialog_isl.fileName().c_str());
 
         /* update string for text field */
         std::snprintf(s_file_buf, sizeof(s_file_buf), "%s", file_dialog_isl.fileName().c_str());
 
-        /* load scheduler data */
-        linkScheduleRead(file_dialog_isl.fileName().c_str(), schedule);
-
-        /* jump to first epoch in scheduler file */
-        *ctx->time_multiplier = 0.0;
-        *ctx->current_epoch = schedule.epochs.front().epoch;
+        /* load scheduler data and jump to its first epoch */
+        if (schedule.read(file_dialog_isl.fileName()) && !schedule.empty())
+        {
+            *ctx->time_multiplier = 0.0;
+            *ctx->current_epoch = schedule.firstEpoch();
+        }
     }
 
 }
@@ -280,7 +291,7 @@ void DrawSceneIsl(SceneContext *sctx, AppConfig *cfg)
 
     if (ToolSettingGetBool(cfg, "isl.enabled", false))
     {
-        const LinkEpoch* isls = linkScheduleFind(schedule, sctx->current_epoch);
+        const LinkEpoch* isls = schedule.find(sctx->current_epoch);
         if (isls) {
             for (int i = 0; i<isls->links.size(); i++)
             {
