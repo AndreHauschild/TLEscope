@@ -53,7 +53,7 @@ LinkSchedule schedule;
 
 /* File dialog object */
 
-FileDialog file_dialog_isl;
+FileDialog file_dialog_isl = FileDialog(".txt");
 
 /* Data functions */
 
