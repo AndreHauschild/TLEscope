@@ -271,7 +271,7 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     ImGui::SameLine();
     if (ImGui::Button(ICON_FA_FOLDER "##select_scheduler_file",ImVec2(icon_w, icon_w)))
     {
-        file_dialog_isl.open();
+        file_dialog_isl.open(ToolSettingGetString(cfg, "isl.schedulerFile", ""));
     }
     if (file_dialog_isl.isOpen() && file_dialog_isl.draw())
     {
@@ -280,17 +280,20 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
         /* update string for text field */
         std::snprintf(s_file_buf, sizeof(s_file_buf), "%s", file_dialog_isl.fileName().c_str());
 
-        /* load scheduler data and jump to its first epoch */
+        /* load scheduler data and jump to first epoch */
         if (schedule.read(file_dialog_isl.fileName()) && !schedule.empty())
         {
             *ctx->time_multiplier = 0.0;
             *ctx->current_epoch = schedule.firstEpoch();
+            /* save last filename */
+            ToolSettingSetString(cfg, "isl.schedulerFile", file_dialog_isl.fileName().c_str());
         }
     }
 
     /*
      * Time control
      */
+
     if (ImGui::Button(ICON_FA_CIRCLE_ARROW_LEFT "##jump_first_epoch",ImVec2(icon_w, icon_w)))
     {
         *ctx->time_multiplier = 0.0;
@@ -303,20 +306,23 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     if (schedule.empty()) {
         ImGui::BeginDisabled();
         double zero = 0.0, lo = 0.0, hi = 1.0;
-        ImGui::SliderScalar(" ", ImGuiDataType_Double, &zero,
-                            &lo, &hi, "n/a");
+        ImGui::SliderScalar("##time_control", ImGuiDataType_Double, &zero, &lo, &hi, "n/a");
         ImGui::EndDisabled();
-    } else {
-        float v_min = schedule.firstEpoch();
-        float v_max = schedule.lastEpoch();
-        float v = *ctx->current_epoch;
+    }
+    else
+    {
+        double v_min = schedule.firstEpoch();
+        double v_max = schedule.lastEpoch();
+        double v = *ctx->current_epoch;
 
         // Degenerate range (single epoch): ImGui's slider math breaks when min == max
         if (v_min == v_max) v_max = v_min + 1.0;
 
-        if (ImGui::SliderFloat(" ", &v, v_min, v_max, "%15.6f"))
+        if (ImGui::SliderScalar("##time_control", ImGuiDataType_Double, &v, &v_min, &v_max, "%15.5f"))
             *ctx->current_epoch = v;
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Select epoch");
+
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Select epoch");
     }
     ImGui::SameLine();
 
