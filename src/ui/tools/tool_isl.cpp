@@ -249,12 +249,20 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
             ImGui::SetTooltip("%s", tooltip);
     };
 
+    /*
+     * Checkbox for ISL connections
+     */
+
     bool showIsl = ToolSettingGetBool(cfg, "isl.enabled", false);
     bool prev = showIsl;
     DrawLayerCheckbox("ISL Range", &showIsl, ICON_FA_ARROW_RIGHT_ARROW_LEFT,
                       "Show a ISL range connection based on a scheduler file (3D only)");
     if (showIsl!=prev)
         ToolSettingSetBool(cfg, "isl.enabled", showIsl);
+
+    /*
+     * ISL scheduler file selection
+     */
 
     static char s_file_buf[512] = "";
     ImGui::SetNextItemWidth(avail_w - icon_w - ImGui::GetStyle().ItemSpacing.x);
@@ -279,6 +287,46 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
             *ctx->current_epoch = schedule.firstEpoch();
         }
     }
+
+    /*
+     * Time control
+     */
+    if (ImGui::Button(ICON_FA_CIRCLE_ARROW_LEFT "##jump_first_epoch",ImVec2(icon_w, icon_w)))
+    {
+        *ctx->time_multiplier = 0.0;
+        *ctx->current_epoch = schedule.firstEpoch();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Jump to first scheduler epoch");
+    ImGui::SameLine();
+
+    if (schedule.empty()) {
+        ImGui::BeginDisabled();
+        double zero = 0.0, lo = 0.0, hi = 1.0;
+        ImGui::SliderScalar(" ", ImGuiDataType_Double, &zero,
+                            &lo, &hi, "n/a");
+        ImGui::EndDisabled();
+    } else {
+        float v_min = schedule.firstEpoch();
+        float v_max = schedule.lastEpoch();
+        float v = *ctx->current_epoch;
+
+        // Degenerate range (single epoch): ImGui's slider math breaks when min == max
+        if (v_min == v_max) v_max = v_min + 1.0;
+
+        if (ImGui::SliderFloat(" ", &v, v_min, v_max, "%15.6f"))
+            *ctx->current_epoch = v;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Select epoch");
+    }
+    ImGui::SameLine();
+
+    if (ImGui::Button(ICON_FA_CIRCLE_ARROW_RIGHT "##jump_last_epoch",ImVec2(icon_w, icon_w)))
+    {
+        *ctx->time_multiplier = 0.0;
+        *ctx->current_epoch = schedule.lastEpoch();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Jump to last scheduler epoch");
 
 }
 
