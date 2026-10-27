@@ -26,6 +26,8 @@
 #include "ui/ui_layout.h"
 #include "ui/notifications.h"
 #include "ui/touch_gesture.h"
+#include "ui/tutorial.h"
+#include "ui/tools/tools.h"
 #include "ui/tools/tools_common.h"
 #include "ui/tools/tools_scene.h"
 #include "ui/tools/tools_settings.h"
@@ -39,7 +41,7 @@
 #include "render/coverage_shaders.h"
 #include "render/coverage_mesh.h"
 #include "render/map_view.h"
-#include "demo/demo_director.h"
+#include "expo/expo_mode.h"
 
 /* application state and resources */
 static AppConfig cfg = []() -> AppConfig {
@@ -47,6 +49,10 @@ static AppConfig cfg = []() -> AppConfig {
     strcpy(c.theme, "default");
     c.window_width = 1280;
     c.window_height = 720;
+    c.window_x = 0;
+    c.window_y = 0;
+    c.window_maximized = true;      /* open maximized by default on first run */
+    c.has_window_placement = false; /* no saved restored rect yet */
     c.target_fps = 60;
     c.ui_scale = 1.0f;
     c.orbit_cache_drift_threshold_km = 50.0f;
@@ -86,13 +92,11 @@ static struct {
     int edgeFalloffLoc2D;
 } g_coverage_shaders;
 
-/* Fraction of the highlight color blended into the coverage fill; half-way
- * stays subtle, and alpha is preserved so the fill remains see-through. */
+// blend fraction for the coverage highlight; alpha is preserved so the fill stays see-through
 #define COVERAGE_SELECT_TINT 0.50f
 #define COVERAGE_HOVER_TINT  0.50f
 
-/** Blends `tint` into `base` by `amount` while preserving `base`'s alpha so
- *  the footprint stays transparent. */
+// blend tint into base, preserving base's alpha
 static Color CoverageTintFill(Color base, Color tint, float amount)
 {
     Color out;
@@ -103,15 +107,13 @@ static Color CoverageTintFill(Color base, Color tint, float amount)
     return out;
 }
 
-/** Selected-coverage fill: blend the selection color into `base` while
- *  preserving `base`'s alpha so the footprint stays transparent. */
+// selected-coverage fill (alpha preserved)
 static Color CoverageSelectFill(Color base)
 {
     return CoverageTintFill(base, g_theme.world.sat_selected, COVERAGE_SELECT_TINT);
 }
 
-/** Hovered-coverage fill: blend the hover color into `base` while preserving
- *  `base`'s alpha so the footprint stays transparent. */
+// hovered-coverage fill (alpha preserved)
 static Color CoverageHoverFill(Color base)
 {
     return CoverageTintFill(base, g_theme.world.sat_hover, COVERAGE_HOVER_TINT);
@@ -175,16 +177,127 @@ static Mesh GenEarthMesh(float radius, int slices, int rings)
     return mesh;
 }
 
+// future ground-track sample cache: 2D tracks re-propagate ~6000 SGP4 calls/frame, so cache on a miss
+struct FutureTrackCacheEntry {
+    Satellite *sat = NULL;
+    double sat_epoch = 0.0;   /* invalidates the track on a TLE reload */
+    int segments = 0;
+    float span = 0.0f;
+    float map_w = 0.0f;
+    float map_h = 0.0f;
+    float earth_offset = 0.0f;
+    bool want_sunlit = false;
+    double epoch_bucket = 0.0;
+    std::vector<Vector2> pts;
+    std::vector<double> times;
+    std::vector<bool> sunlit;
+    bool valid = false;
+};
+
+#define FUTURE_TRACK_CACHE_MAX 64
+static std::vector<FutureTrackCacheEntry> g_future_track_cache;
+
+/* coarse 10-minute sim-time bucket: refresh without per-frame propagation */
+static double FutureTrackEpochBucket(double epoch)
+{
+    return floor(epoch * 144.0);
+}
+
+/** return cached ground-track samples for one satellite, rebuilding on a miss */
+static const FutureTrackCacheEntry *GetFutureTrackSamples(
+    Satellite *sat, int segments, float span, double epoch,
+    float earth_offset, float map_w, float map_h, bool want_sunlit, Vector3 sun_dir)
+{
+    const double bucket = FutureTrackEpochBucket(epoch);
+
+    for (const FutureTrackCacheEntry &e : g_future_track_cache)
+    {
+        if (e.valid && e.sat == sat && e.sat_epoch == sat->epoch_unix &&
+            e.segments == segments && e.span == span &&
+            e.map_w == map_w && e.map_h == map_h && e.earth_offset == earth_offset &&
+            e.want_sunlit == want_sunlit && e.epoch_bucket == bucket)
+            return &e;
+    }
+
+    if ((int)g_future_track_cache.size() >= FUTURE_TRACK_CACHE_MAX)
+        g_future_track_cache.clear();
+
+    /* reuse a slot for this sat/resolution to keep vector capacity */
+    FutureTrackCacheEntry *slot = NULL;
+    for (FutureTrackCacheEntry &e : g_future_track_cache)
+    {
+        if (e.sat == sat && e.segments == segments && e.span == span)
+        {
+            slot = &e;
+            break;
+        }
+    }
+    if (!slot)
+    {
+        g_future_track_cache.push_back(FutureTrackCacheEntry{});
+        slot = &g_future_track_cache.back();
+    }
+
+    slot->sat = sat;
+    slot->sat_epoch = sat->epoch_unix;
+    slot->segments = segments;
+    slot->span = span;
+    slot->map_w = map_w;
+    slot->map_h = map_h;
+    slot->earth_offset = earth_offset;
+    slot->want_sunlit = want_sunlit;
+    slot->epoch_bucket = bucket;
+    slot->pts.resize((size_t)segments + 1);
+    slot->times.resize((size_t)segments + 1);
+    if (want_sunlit)
+        slot->sunlit.resize((size_t)segments + 1);
+
+    orbit_adaptive_sample_times(sat, epoch, segments + 1, span, slot->times.data());
+    for (int j = 0; j <= segments; j++)
+    {
+        double t = slot->times[j];
+        double t_unix = get_unix_from_epoch(t);
+        Vector3 raw_pos = calculate_position(sat, t_unix);
+        get_map_coordinates(raw_pos, epoch_to_gmst(t), earth_offset, map_w, map_h,
+                            &slot->pts[j].x, &slot->pts[j].y);
+        if (want_sunlit)
+            slot->sunlit[j] = !is_sat_eclipsed(raw_pos, sun_dir);
+    }
+    slot->valid = true;
+    return slot;
+}
+
 /** Pick a theme-defined color for an additional 2D future ground track. */
 static Color MultiGroundTrackColor(int index)
 {
     return g_theme.ground_tracks.palette[index % GROUND_TRACK_PALETTE_SIZE];
 }
 
+/** apply the direction-of-motion alpha ramp; phase is the signed fraction of an orbit (positive = ahead) */
+static Color ApplyOrbitDirection(Color c, double phase, float floor = ORBIT_DIR_MIN)
+{
+    if (!ToolSettingGetBool(&cfg, LAYERS_KEY_ORBIT_DIRECTION, true))
+        return c;
+    const bool anim = ToolSettingGetBool(&cfg, LAYERS_KEY_ORBIT_DIRECTION_ANIM, false);
+    const float k = OrbitDirectionIntensity(phase, anim, GetTime(), floor);
+    c.a = (unsigned char)(c.a * k);
+    return c;
+}
+
+/** line-width multiplier for the direction ramp (1.0 when the layer is off) */
+static float OrbitDirectionWidthScale(double phase, float floor = ORBIT_DIR_MIN)
+{
+    if (!ToolSettingGetBool(&cfg, LAYERS_KEY_ORBIT_DIRECTION, true))
+        return 1.0f;
+    const bool anim = ToolSettingGetBool(&cfg, LAYERS_KEY_ORBIT_DIRECTION_ANIM, false);
+    return OrbitDirectionWidth(phase, anim, GetTime(), floor);
+}
+
 /** render orbit lines in 3d space */
-static void draw_orbit_3d(Satellite *sat, double current_epoch, bool is_highlighted, float alpha, int step, bool apply_sunlit)
+static void draw_orbit_3d(Satellite *sat, double current_epoch, bool is_highlighted, float alpha, int step, bool apply_sunlit, Vector3 cam_pos)
 {
     Color orbitColor = ApplyAlpha(is_highlighted ? g_theme.world.orbit_active : g_theme.world.orbit, alpha);
+    const float earth_r = EARTH_RADIUS_KM / DRAW_SCALE;
 
     if (is_highlighted)
     {
@@ -217,7 +330,10 @@ static void draw_orbit_3d(Satellite *sat, double current_epoch, bool is_highligh
                     else
                         drawCol = ApplyAlpha(g_theme.world.orbit, alpha);
                 }
-                DrawLine3D(prev_pos, pos, drawCol);
+                drawCol = ApplyOrbitDirection(drawCol, (double)i / (double)segments,
+                                              ORBIT_DIR_MIN_SELECTED);
+                if (!IsOrbitSegmentOccluded(cam_pos, prev_pos, pos, earth_r))
+                    DrawLine3D(prev_pos, pos, drawCol);
             }
             prev_pos = pos;
         }
@@ -236,13 +352,15 @@ static void draw_orbit_3d(Satellite *sat, double current_epoch, bool is_highligh
         Vector3 prev_pos = sat->orbit_cache[0];
         int cache_size = sat->orbit_cache_resolution;
 
+        /* direction trail is a selected-orbit indicator only, so dimmed orbits stay flat */
         for (int i = step; i < cache_size; i += step)
         {
             Vector3 pos = sat->orbit_cache[i];
             Color drawCol = orbitColor;
             if (cfg.highlight_sunlit && apply_sunlit && !is_sat_eclipsed(Vector3Scale(pos, DRAW_SCALE), base_sun_dir))
                 drawCol = ApplyAlpha(g_theme.world.sat_hover, alpha);
-            DrawLine3D(prev_pos, pos, drawCol);
+            if (!IsOrbitSegmentOccluded(cam_pos, prev_pos, pos, earth_r))
+                DrawLine3D(prev_pos, pos, drawCol);
             prev_pos = pos;
         }
 
@@ -253,17 +371,20 @@ static void draw_orbit_3d(Satellite *sat, double current_epoch, bool is_highligh
             int last = cache_size - 1;
             if (cfg.highlight_sunlit && apply_sunlit && !is_sat_eclipsed(Vector3Scale(sat->orbit_cache[last], DRAW_SCALE), base_sun_dir))
                 drawCol = ApplyAlpha(g_theme.world.sat_hover, alpha);
-            DrawLine3D(prev_pos, sat->orbit_cache[last], drawCol);
+            if (!IsOrbitSegmentOccluded(cam_pos, prev_pos, sat->orbit_cache[last], earth_r))
+                DrawLine3D(prev_pos, sat->orbit_cache[last], drawCol);
         }
     }
 }
 
 /** draw a favorite satellite's orbit in 3d using a palette color (lit-up look). */
-static void draw_orbit_3d_colored(Satellite *sat, double current_epoch, Color color, float alpha, int step, bool apply_sunlit)
+static void draw_orbit_3d_colored(Satellite *sat, double current_epoch, Color color, float alpha, int step, bool apply_sunlit, Vector3 cam_pos)
 {
     Color orbitColor = ApplyAlpha(color, alpha);
     if (!sat->orbit_cached)
         return;
+
+    const float earth_r = EARTH_RADIUS_KM / DRAW_SCALE;
 
     Vector3 base_sun_dir = {0};
     if (cfg.highlight_sunlit && apply_sunlit)
@@ -281,7 +402,9 @@ static void draw_orbit_3d_colored(Satellite *sat, double current_epoch, Color co
         Color drawCol = orbitColor;
         if (cfg.highlight_sunlit && apply_sunlit && !is_sat_eclipsed(Vector3Scale(pos, DRAW_SCALE), base_sun_dir))
             drawCol = ApplyAlpha(g_theme.world.sat_hover, alpha);
-        DrawLine3D(prev_pos, pos, drawCol);
+        drawCol = ApplyOrbitDirection(drawCol, sat->orbit_cache_phase[i]);
+        if (!IsOrbitSegmentOccluded(cam_pos, prev_pos, pos, earth_r))
+            DrawLine3D(prev_pos, pos, drawCol);
         prev_pos = pos;
     }
 
@@ -292,7 +415,9 @@ static void draw_orbit_3d_colored(Satellite *sat, double current_epoch, Color co
         int last = cache_size - 1;
         if (cfg.highlight_sunlit && apply_sunlit && !is_sat_eclipsed(Vector3Scale(sat->orbit_cache[last], DRAW_SCALE), base_sun_dir))
             drawCol = ApplyAlpha(g_theme.world.sat_hover, alpha);
-        DrawLine3D(prev_pos, sat->orbit_cache[last], drawCol);
+        drawCol = ApplyOrbitDirection(drawCol, sat->orbit_cache_phase[last]);
+        if (!IsOrbitSegmentOccluded(cam_pos, prev_pos, sat->orbit_cache[last], earth_r))
+            DrawLine3D(prev_pos, sat->orbit_cache[last], drawCol);
     }
     rlSetLineWidth(1.0f);
 }
@@ -351,7 +476,7 @@ static void UpdateAutoWarpState(bool *is_auto_warping, double *auto_warp_target,
         double eased_speed = fmin(base_speed, fabs(diff_sec) * 3.0);
         if (eased_speed < 1.0)
             eased_speed = 1.0;
-        *time_multiplier = eased_speed * warp_dir;
+        *time_multiplier = ClampTimeMultiplier(eased_speed * warp_dir);
 
         if (fabs(diff_sec) <= fabs(*time_multiplier) * GetFrameTime())
         {
@@ -468,10 +593,205 @@ static void StopTrackingLost(TargetLock *lock, Satellite **sat, uint32_t *norad,
         NotifyPush(NOTIFY_INFO, ICON_FA_CROSSHAIRS, "Tracking stopped");
 }
 
+#define WINDOW_MIN_W 480
+#define WINDOW_MIN_H 320
+
+static int MonitorForPoint(int x, int y)
+{
+    int count = GetMonitorCount();
+    for (int i = 0; i < count; i++)
+    {
+        Vector2 pos = GetMonitorPosition(i);
+        int mw = GetMonitorWidth(i);
+        int mh = GetMonitorHeight(i);
+        if (x >= (int)pos.x && x < (int)pos.x + mw &&
+            y >= (int)pos.y && y < (int)pos.y + mh)
+            return i;
+    }
+    return GetCurrentMonitor();
+}
+static void ClampWindowRectToMonitor(int &x, int &y, int &w, int &h)
+{
+    int monitor = MonitorForPoint(x + w / 2, y + h / 2);
+    Vector2 pos = GetMonitorPosition(monitor);
+    int mw = GetMonitorWidth(monitor);
+    int mh = GetMonitorHeight(monitor);
+
+    if (w < WINDOW_MIN_W) w = WINDOW_MIN_W;
+    if (h < WINDOW_MIN_H) h = WINDOW_MIN_H;
+    if (w > mw) w = mw;
+    if (h > mh) h = mh;
+
+    int minX = (int)pos.x;
+    int minY = (int)pos.y;
+    int maxX = (int)pos.x + mw - w;
+    int maxY = (int)pos.y + mh - h;
+
+    if (x < minX || x > maxX) x = minX + (mw - w) / 2;
+    if (y < minY || y > maxY) y = minY + (mh - h) / 2;
+    if (x < minX) x = minX;
+    if (y < minY) y = minY;
+    if (x > maxX) x = maxX;
+    if (y > maxY) y = maxY;
+}
+
+static Texture2D g_sunGlowTex = {0};
+
+static Texture2D SunEnsureGlowTexture(void)
+{
+    if (g_sunGlowTex.id == 0)
+    {
+        const int SZ = 128;
+        Image img = GenImageColor(SZ, SZ, BLANK);
+        float c = (float)SZ * 0.5f;
+        float maxR = c;
+
+        for (int y = 0; y < SZ; y++)
+        {
+            for (int x = 0; x < SZ; x++)
+            {
+                float dx = (float)x - c;
+                float dy = (float)y - c;
+                float r = sqrtf(dx * dx + dy * dy) / maxR;
+                if (r >= 1.0f)
+                    continue;
+
+                float halo = powf(1.0f - r, 2.4f);
+                float core = powf(1.0f - r, 14.0f);
+
+                unsigned char R = (unsigned char)(255.0f);
+                unsigned char G = (unsigned char)((215.0f + (255.0f - 215.0f) * core) + 0.5f);
+                unsigned char B = (unsigned char)((140.0f + (245.0f - 140.0f) * core) + 0.5f);
+                unsigned char A = (unsigned char)(Clamp(halo, 0.0f, 1.0f) * 255.0f + 0.5f);
+                ImageDrawPixel(&img, x, y, (Color){R, G, B, A});
+            }
+        }
+
+        g_sunGlowTex = LoadTextureFromImage(img);
+        SetTextureFilter(g_sunGlowTex, TEXTURE_FILTER_BILINEAR);
+        UnloadImage(img);
+    }
+    return g_sunGlowTex;
+}
+
+static void DrawSunOverlay(Vector3 sunDirWorld, Vector3 camForward, Camera cam, const AppConfig &cfg)
+{
+    if (!cfg.show_sun)
+        return;
+    if (g_view3d_w <= 0.0f || g_view3d_h <= 0.0f)
+        return;
+
+    if (Vector3DotProduct(sunDirWorld, camForward) <= 0.0f)
+        return;
+
+    const float sunDist = 1200.0f;
+    Vector3 sunWorld = Vector3Add(cam.position, Vector3Scale(sunDirWorld, sunDist));
+    Vector2 sp = WorldToScreenViewport3D(sunWorld, cam);
+
+    float margin_x = g_view3d_w * 0.6f;
+    float margin_y = g_view3d_h * 0.6f;
+    if (sp.x < g_view3d_x - margin_x || sp.x > g_view3d_x + g_view3d_w + margin_x ||
+        sp.y < g_view3d_y - margin_y || sp.y > g_view3d_y + g_view3d_h + margin_y)
+        return;
+
+    const float rEarth = EARTH_RADIUS_KM / DRAW_SCALE;
+    const float rAtmo  = (EARTH_RADIUS_KM + 80.0f) / DRAW_SCALE;
+    float occlusion = 1.0f;
+    {
+        Vector3 o = cam.position;
+        float od = Vector3DotProduct(o, sunDirWorld);
+        float b2 = Vector3DotProduct(o, o) - od * od;
+        float b  = sqrtf(fmaxf(b2, 0.0f));
+        bool  in_front = (-od) > 0.0f;
+        if (in_front)
+        {
+            if (b <= rEarth)
+                occlusion = 0.0f;
+            else if (b <= rAtmo)
+                occlusion = (b - rEarth) / (rAtmo - rEarth);
+        }
+    }
+    if (occlusion <= 0.0f)
+        return;
+
+    Vector2 center = { g_view3d_x + g_view3d_w * 0.5f, g_view3d_y + g_view3d_h * 0.5f };
+    float short_side = fminf((float)GetScreenWidth(), (float)GetScreenHeight());
+    if (short_side <= 0.0f)
+        short_side = fminf(g_view3d_w, g_view3d_h);
+
+    float disk = short_side * 0.045f;
+    if (disk < 8.0f)
+        disk = 8.0f;
+    float glowR = disk * 6.0f;
+
+    Vector2 d = { (sp.x - center.x) / (g_view3d_w * 0.5f), (sp.y - center.y) / (g_view3d_h * 0.5f) };
+    float centreDist = sqrtf(d.x * d.x + d.y * d.y);
+    float centreness = Clamp(1.0f - centreDist, 0.0f, 1.0f);
+
+    Texture2D glow = SunEnsureGlowTexture();
+    Rectangle src = { 0.0f, 0.0f, (float)glow.width, (float)glow.height };
+
+    rlDrawRenderBatchActive();
+    rlDisableDepthTest();
+    rlDisableDepthMask();
+
+    BeginScissorMode((int)g_view3d_x, (int)g_view3d_y, (int)g_view3d_w, (int)g_view3d_h);
+
+    BeginBlendMode(BLEND_ADDITIVE);
+
+    DrawTexturePro(glow, src, (Rectangle){ sp.x, sp.y, glowR * 2.0f, glowR * 2.0f },
+                   (Vector2){ glowR, glowR }, 0.0f,
+                   (Color){ 255, 220, 150, (unsigned char)(200.0f * occlusion) });
+    DrawTexturePro(glow, src, (Rectangle){ sp.x, sp.y, disk * 2.0f, disk * 2.0f },
+                   (Vector2){ disk, disk }, 0.0f,
+                   (Color){ 255, 255, 245, (unsigned char)(255.0f * occlusion) });
+
+    if (cfg.show_sun_flare)
+    {
+        float flare = centreness * occlusion;
+        if (flare > 0.001f)
+        {
+            const float ts[7] = { -0.5f, 0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f };
+            const float sizes[7] = { 0.18f, 0.10f, 0.14f, 0.08f, 0.12f, 0.07f, 0.16f };
+            const Color tints[7] = {
+                { 255, 200, 140, 255 }, { 255, 170, 120, 255 }, { 180, 210, 255, 255 },
+                { 255, 160, 200, 255 }, { 200, 230, 255, 255 }, { 255, 180, 120, 255 },
+                { 255, 200, 140, 255 }
+            };
+
+            for (int i = 0; i < 7; i++)
+            {
+                float t = ts[i];
+                Vector2 gpos = { center.x + (sp.x - center.x) * t, center.y + (sp.y - center.y) * t };
+                float gr = short_side * sizes[i] * (0.7f + 0.3f * centreness);
+                if (gr < 2.0f)
+                    continue;
+                unsigned char a = (unsigned char)(tints[i].a * flare * 0.55f);
+                DrawTexturePro(glow, src, (Rectangle){ gpos.x, gpos.y, gr * 2.0f, gr * 2.0f },
+                               (Vector2){ gr, gr }, 0.0f, (Color){ tints[i].r, tints[i].g, tints[i].b, a });
+            }
+
+            float streak_len = glowR * 7.0f;
+            float streak_h = disk * 0.6f;
+            unsigned char sa = (unsigned char)(140.0f * flare);
+            DrawTexturePro(glow, src, (Rectangle){ sp.x, sp.y, streak_len, streak_h * 2.0f },
+                           (Vector2){ streak_len * 0.5f, streak_h }, 0.0f, (Color){ 180, 210, 255, sa });
+        }
+    }
+
+    EndBlendMode();
+    EndScissorMode();
+
+    rlDrawRenderBatchActive();
+    rlDisableDepthTest();
+    rlEnableDepthMask();
+}
+
 int main(void)
 {
     LogInit();
     AsyncFetchInit();
+    SimScanInit();
 
     LoadAppConfig("settings.json", &cfg);
     SetUseLocalTime(cfg.use_local_time);
@@ -502,26 +822,34 @@ int main(void)
     TouchGestureInit();
     if (cfg.fullscreen) ToggleFullscreen();
 
-#ifndef __APPLE__
-    int monitor = GetCurrentMonitor();
-    int max_w = GetMonitorWidth(monitor);
-    int max_h = GetMonitorHeight(monitor);
-    int current_w = GetScreenWidth();
-    int current_h = GetScreenHeight();
-    Vector2 monitorPos = GetMonitorPosition(monitor);
+    // restore the persisted window placement before maximizing so Restore Down returns on-screen
+    if (!cfg.fullscreen)
+    {
+        if (!cfg.has_window_placement)
+        {
+            // first run: pick a centered restored rect on the current monitor
+            int monitor = GetCurrentMonitor();
+            Vector2 pos = GetMonitorPosition(monitor);
+            int mw = GetMonitorWidth(monitor);
+            int mh = GetMonitorHeight(monitor);
 
-    if (current_w >= max_w || current_h >= max_h)
-    {
-        /* shrink and center the window a bit before maximizing so the restored state has a valid position */
-        SetWindowSize(max_w - 100, max_h - 100);
-        SetWindowPosition((int)monitorPos.x + 50, (int)monitorPos.y + 50);
-        SetWindowState(FLAG_WINDOW_MAXIMIZED);
+            if (cfg.window_width <= 0) cfg.window_width = 1280;
+            if (cfg.window_height <= 0) cfg.window_height = 720;
+            if (cfg.window_width > mw - 100) cfg.window_width = mw - 100;
+            if (cfg.window_height > mh - 100) cfg.window_height = mh - 100;
+            cfg.window_x = (int)pos.x + (mw - cfg.window_width) / 2;
+            cfg.window_y = (int)pos.y + (mh - cfg.window_height) / 2;
+        }
+
+        ClampWindowRectToMonitor(cfg.window_x, cfg.window_y, cfg.window_width, cfg.window_height);
+        SetWindowSize(cfg.window_width, cfg.window_height);
+        SetWindowPosition(cfg.window_x, cfg.window_y);
+
+        if (cfg.window_maximized)
+            SetWindowState(FLAG_WINDOW_MAXIMIZED);
+
+        cfg.has_window_placement = true;
     }
-    else
-    {
-        SetWindowPosition((int)monitorPos.x + (max_w - current_w) / 2, (int)monitorPos.y + (max_h - current_h) / 2);
-    }
-#endif
 
     SetExitKey(0);
 
@@ -588,15 +916,16 @@ int main(void)
     int advScatLoc3D = GetShaderLocation(shader3D, "advancedScatter");
     int showCloudsLoc3D = GetShaderLocation(shader3D, "showClouds");
 
+    /* shaded solid-body shader for the textureless Earth */
+    Shader earthSolidShader = LoadShaderFromMemory(NULL, Shaders::fsEarthSolid3D);
+    int earthSolidSunLoc = GetShaderLocation(earthSolidShader, "sunDir");
+    int earthSolidBaseLoc = GetShaderLocation(earthSolidShader, "baseColor");
+
     Shader shader2D = LoadShaderFromMemory(NULL, Shaders::fs2D);
     int sunDirLoc2D = GetShaderLocation(shader2D, "sunDir");
     int nightTexLoc2D = GetShaderLocation(shader2D, "texture1");
 
-    /* full-screen monochrome-red post-process (night / dark-adaptation mode).
-     * It is applied as a single screen-space pass over a GPU copy of the
-     * default (MSAA) framebuffer, so ImGui's DPI-based scissor math stays
-     * valid and antialiasing is preserved. nightTex holds the backbuffer copy
-     * and is (re)allocated at device-pixel size when the window changes. */
+    // night mode: single screen-space red pass over a GPU copy of the MSAA backbuffer
     Shader shaderNight = LoadShaderFromMemory(NULL, Shaders::fsNight);
     int nightIntensityLoc = GetShaderLocation(shaderNight, "intensity");
     Texture2D nightTex = {0};
@@ -738,6 +1067,7 @@ int main(void)
     Satellite *track_follow_sat = NULL;
 
     double current_epoch = get_current_real_time_epoch();
+    bool live_follow = true;   /* sim clock slaved to wall clock while live */
     double time_multiplier = 1.0;
     double saved_multiplier = 1.0;
     bool is_2d_view = false;
@@ -750,14 +1080,9 @@ int main(void)
     double auto_warp_target = 0.0;
     double auto_warp_initial_diff = 0.0;
     bool exit_app = false;
-    bool is_ecliptic_frame = false;
+    bool is_ecliptic_frame = cfg.show_ecliptic_frame;
     float current_ecliptic_angle = 0.0f;
     bool is_pov_mode = false;
-
-    bool show_scope = false;
-    float scope_az = 180.0f;
-    float scope_el = 45.0f;
-    float scope_beam = 30.0f;
 
     Satellite *hovered_sat = NULL;
     Satellite *selected_sat = NULL;
@@ -768,41 +1093,6 @@ int main(void)
     Vector2 left_press_pos = {0};
     bool left_press_over_ui = false;
     bool left_drag_active = false;
-
-    /* Demo Mode director context: points at the live main-loop locals above */
-    DemoContext demo_ctx = {
-        .cfg = &cfg,
-        .is_2d_view = &is_2d_view,
-        .is_pov_mode = &is_pov_mode,
-        .is_ecliptic_frame = &is_ecliptic_frame,
-        .current_epoch = &current_epoch,
-        .time_multiplier = &time_multiplier,
-        .selected_sat = &selected_sat,
-        .hovered_sat = &hovered_sat,
-        .hide_unselected = &hide_unselected,
-        .unselected_fade = &unselected_fade,
-        .camera3d = &Camera3DParams,
-        .cam_distance = &camDistance,
-        .cam_angle_x = &camAngleX,
-        .cam_angle_y = &camAngleY,
-        .target_cam_distance = &target_camDistance,
-        .target_cam_angle_x = &target_camAngleX,
-        .target_cam_angle_y = &target_camAngleY,
-        .target_camera3d_target = &target_camera3d_target,
-        .camera2d = &Camera2DParams,
-        .target_camera2d_zoom = &target_camera2d_zoom,
-        .target_camera2d_target = &target_camera2d_target,
-        .show_scope = &show_scope,
-        .scope_az = &scope_az,
-        .scope_el = &scope_el,
-        .scope_beam = &scope_beam,
-        .selected_pass_idx = &g_ui.selected_pass_idx,
-        .active_lock = &active_lock,
-        .draw_earth_radius = draw_earth_radius,
-        .map_w = map_w,
-        .map_h = map_h,
-    };
-    DemoDirectorInit();
 
     /* apply vsync / fps limit at startup so the window state matches the config */
     if (cfg.hint_vsync)
@@ -821,6 +1111,17 @@ int main(void)
     /* main loop */
     while (!WindowShouldClose() && !exit_app)
     {
+        if (!IsWindowFullscreen() && !IsWindowMaximized() && !IsWindowMinimized())
+        {
+            Vector2 wp = GetWindowPosition();
+            cfg.window_x = (int)wp.x;
+            cfg.window_y = (int)wp.y;
+            cfg.window_width = GetScreenWidth();
+            cfg.window_height = GetScreenHeight();
+            cfg.has_window_placement = true;
+        }
+        cfg.window_maximized = IsWindowMaximized();
+
         if (cfg.reload_theme)
         {
             cfg.reload_theme = false;
@@ -837,10 +1138,7 @@ int main(void)
             UnloadTexture(apoMark);
             UnloadFont(customFont);
 
-            /* reload theme data + ImGui presentation.
-             * NOTE: Do NOT call LoadAppConfig here — it would re-read
-             * settings.json (which still has the old theme name) and
-             * overwrite cfg.theme, defeating the switch. */
+            // reload theme data + ImGui presentation; do NOT call LoadAppConfig (it would overwrite cfg.theme)
             ThemeInitDefaults(&g_theme);
             ThemeLoad(cfg.theme, &g_theme);
             ThemeRebuildImGuiFonts(&g_theme, cfg.ui_scale);
@@ -887,36 +1185,20 @@ int main(void)
             SetTextureFilter(apoMark, TEXTURE_FILTER_BILINEAR);
         }
 
-        /* Demo Mode: Esc exits the demo, before the normal Esc handler below */
-        if (IsKeyPressed(KEY_ESCAPE) && DemoDirectorActive())
-            DemoDirectorRequestStop();
-        DemoDirectorUpdate(&demo_ctx, GetFrameTime());
-
-        /* demo mode owns the camera; tracking is not applicable and must not toast */
-        if (DemoDirectorActive())
-        {
-            active_lock = LOCK_NONE;
-            tracked_sat = NULL;
-            tracked_norad = 0;
-        }
-
-        /* 3-finger double-tap toggles clean view (identical to pressing H).
-         * Consumed unconditionally so it works even while a text field is focused. */
+        // 3-finger double-tap toggles clean view (same as H); consumed even while typing
         if (TouchGestureConsumeThreeFingerDoubleTap())
             LayoutToggleCleanView();
 
         bool is_typing = IsUITyping();
         bool over_ui = IsMouseOverUI(&cfg);
+        const bool tutorial_up = TutorialActive(&cfg);
 
         float vp_x, vp_y, vp_w, vp_h;
         LayoutGetViewportRect(&vp_x, &vp_y, &vp_w, &vp_h);
 
         Viewport3DSetRect(vp_x, vp_y, vp_w, vp_h);
 
-        /* Keep the 2D map centered on whole pixels and preserve the user's
-         * relative zoom when the window size changes. Demo Mode owns the
-         * camera while active, so defer viewport adjustment until it exits. */
-        if (!DemoDirectorActive())
+        // keep the 2D map pixel-centered and preserve relative zoom on window resize
         {
             Camera2DParams.offset = (Vector2){floorf(vp_x + vp_w * 0.5f), floorf(vp_y + vp_h * 0.5f)};
             const float new_fill = MapFillZoomFor(map_w, map_h, vp_w, vp_h);
@@ -931,8 +1213,8 @@ int main(void)
         /* remember the scale so the +/- keybind can toast only on a real change */
         const float prev_ui_scale = cfg.ui_scale;
 
-        /* input handling (skipped while Demo Mode owns the scene) */
-        if (!is_typing && !DemoDirectorActive())
+        /* input handling */
+        if (!is_typing && !tutorial_up)
         {
             if (IsKeyPressed(KEY_SPACE))
             {
@@ -1098,18 +1380,6 @@ int main(void)
             if (IsKeyPressed(KEY_TWO))
                 LayoutSetSidebarVisible(SIDEBAR_RIGHT, !LayoutSidebarVisible(SIDEBAR_RIGHT));
 
-            /* cancel home-location picking without changing the location */
-            if (IsKeyPressed(KEY_ESCAPE) && picking_home)
-            {
-                picking_home = false;
-                pick_location_index = -1;
-                LOG_INFO("Home location picking cancelled");
-            }
-            /* Esc clears the satellite selection (skipped while cancelling home picking) */
-            else if (IsKeyPressed(KEY_ESCAPE))
-            {
-                selected_sat = NULL;
-            }
         }
 
         if (cfg.ui_scale < 0.5f)
@@ -1123,9 +1393,16 @@ int main(void)
         /* time warp logic for jumping to specific dates */
         UpdateAutoWarpState(&is_auto_warping, &auto_warp_target, &auto_warp_initial_diff, &current_epoch, &time_multiplier, &saved_multiplier);
 
-        /* update time continuously for smooth visual interpolation */
-        current_epoch += (GetFrameTime() * time_multiplier) / 86400.0;
-        current_epoch = normalize_epoch(current_epoch);
+        // live-mode time lock: at 1x with no auto-warp, slave the sim clock to the wall clock; else accumulate frame time
+        double real_now = get_current_real_time_epoch_hr();
+        bool running_live = (!is_auto_warping) && (time_multiplier == 1.0);
+
+        if (running_live && live_follow)
+            current_epoch = real_now;
+        else
+            current_epoch = normalize_epoch(current_epoch + (GetFrameTime() * time_multiplier) / 86400.0);
+
+        live_follow = running_live && (fabs(current_epoch - real_now) * 86400.0 < LIVE_WINDOW_SEC);
 
         /* distance-based invalidation */
         if (sat_count > 0)
@@ -1172,8 +1449,7 @@ int main(void)
                 continue;
             }
 
-            /* if an orbital body ends up below 80% of earth's radius, disable it -
-               it's about to hit the singularity and get ejected at absurd speeds */
+            // below 80% of Earth's radius: about to hit the singularity, disable it
             if (Vector3Length(satellites[i].current_pos) < EARTH_RADIUS_KM * 0.8f)
             {
                 LOG_WARN("Sat %s deactivated - orbital decay (pos < 0.8x Earth radius)", satellites[i].name);
@@ -1233,11 +1509,7 @@ int main(void)
         Vector2 mouseDelta = GetMouseDelta();
         hovered_sat = NULL;
 
-        /* Classify the held left button as a click or a camera drag. Trackpads
-         * have no way to hold a right button while moving, so left-drag is the
-         * only workable pan/orbit gesture there; once a press passes the
-         * threshold the click is swallowed on release so dragging the view does
-         * not also select whatever sat happened to be under the cursor. */
+        // left-drag is the only pan/orbit gesture on trackpads; past the threshold the click is swallowed on release
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
         {
             left_press_pos = GetMousePosition();
@@ -1266,8 +1538,8 @@ int main(void)
             }
         }
         
-        /* 2D picking/camera (skipped while Demo Mode owns the scene) */
-        if (!DemoDirectorActive() && is_2d_view)
+        /* 2D picking/camera */
+        if (is_2d_view)
         {
             if (!over_ui)
             {
@@ -1322,7 +1594,7 @@ int main(void)
                 }
             }
         }
-        else if (!DemoDirectorActive())
+        else
         {
             /* handle picking and camera in 3d mode */
             if (!over_ui)
@@ -1438,8 +1710,8 @@ int main(void)
             }
         }
 
-        /* selection/double-click planet lock on release; skipped in Demo Mode */
-        if (!DemoDirectorActive() && IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && !left_drag_active)
+        /* selection/double-click planet lock on release */
+        if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && !left_drag_active && !tutorial_up)
         {
             if (!over_ui)
             {
@@ -1448,8 +1720,7 @@ int main(void)
                     float lat, lon;
                     if (GetMouseEarthIntersection(GetMousePosition(), is_2d_view, Camera2DParams, Camera3DParams, gmst_deg, cfg.earth_rotation_offset, map_w, map_h, &lat, &lon))
                     {
-                        /* picking on the map updates the location the picker was
-                         * activated from, or the home location if none was targeted */
+                        // picking updates the targeted location, or home if none was targeted
                         if (pick_location_index >= 0 && pick_location_index < location_count)
                         {
                             UpdateLocation(pick_location_index, NULL, lat, lon, 0.0f);
@@ -1540,8 +1811,7 @@ int main(void)
             }
         }
 
-        /* camera interpolation targets (skipped while Demo Mode owns the camera) */
-        if (!DemoDirectorActive())
+        /* camera interpolation targets */
         {
             if (active_lock == LOCK_EARTH)
             {
@@ -1584,16 +1854,14 @@ int main(void)
                 }
             }
 
-            /* Keep the horizontal target on the nearest map copy so panning can
-             * cross the antimeridian without the interpolation jumping a seam. */
+            // keep the horizontal target on the nearest map copy so panning crosses the antimeridian without a seam
             {
                 const float shift = -map_w * floorf((target_camera2d_target.x + map_w * 0.5f) / map_w);
                 target_camera2d_target.x += shift;
                 Camera2DParams.target.x += shift;
             }
 
-            /* Keep the map covering the viewport and prevent vertical panning
-             * beyond the north/south edges. */
+            // keep the map covering the viewport; clamp vertical panning to the poles
             if (cfg.limit_map_zoomout && target_camera2d_zoom < fill_zoom)
                 target_camera2d_zoom = fill_zoom;
             auto clamp_map_y = [&](float zoom, float y) {
@@ -1703,7 +1971,7 @@ int main(void)
 
         Satellite *active_sat = hovered_sat ? hovered_sat : selected_sat;
 
-        if (!DemoDirectorActive() && !is_2d_view && is_pov_mode && selected_sat && selected_sat->is_active)
+        if (!is_2d_view && is_pov_mode && selected_sat && selected_sat->is_active)
         {
             Vector3 sat_pos_3d = Vector3Scale(selected_sat->current_pos, 1.0f / DRAW_SCALE);
             Camera3DParams.position = sat_pos_3d;
@@ -1758,9 +2026,7 @@ int main(void)
         /* ground coverage scope: Sel (active satellite only) or All (every active satellite) */
         int gc_mode = ToolSettingGetInt(&cfg, LAYERS_KEY_GC_MODE, LAYERS_GC_MODE_SELECTED);
 
-        /* The frame is rendered exactly as normal to the default (MSAA)
-         * framebuffer. Night mode is applied afterwards as a single
-         * screen-space post-process pass just before EndDrawing() (below). */
+        // frame renders normally to the MSAA framebuffer; night mode is a post-process pass before EndDrawing()
         BeginDrawing();
         ClearBackground(g_theme.world.bg);
 
@@ -1785,7 +2051,7 @@ int main(void)
         float m_size_2d = 24.0f * cfg.ui_scale / Camera2DParams.zoom;
         float mark_size_2d = 32.0f * cfg.ui_scale / Camera2DParams.zoom;
 
-        /* universal Earth texture toggle (Layers panel); off = plain black body */
+        /* Earth Texture toggle (Layers panel); off = theme-colored solid body */
         const bool show_earth = cfg.show_earth_texture;
 
         /* 2d projection rendering */
@@ -1819,13 +2085,13 @@ int main(void)
             }
             else
             {
-                /* earth texture disabled: plain black body underneath the overlays */
+                /* texture off: theme-colored map surface */
                 for (int k = first_copy; k <= last_copy; k++)
-                    DrawRectangle((int)(k * map_w - map_w / 2.0f), (int)(-map_h / 2.0f), (int)map_w, (int)map_h, BLACK);
+                    DrawRectangle((int)(k * map_w - map_w / 2.0f), (int)(-map_h / 2.0f), (int)map_w, (int)map_h,
+                                  ThemeEarthColor());
             }
 
-            /* Horizontal wrapping fills the scene viewport; vertically the map
-             * still ends at the poles. */
+            // horizontal wrapping fills the viewport; vertically the map ends at the poles
             Vector2 mapMin = GetWorldToScreen2D((Vector2){-map_w / 2.0f, -map_h / 2.0f}, Camera2DParams);
             Vector2 mapMax = GetWorldToScreen2D((Vector2){map_w / 2.0f, map_h / 2.0f}, Camera2DParams);
 
@@ -2028,9 +2294,10 @@ int main(void)
 
                         if (gc_mode == LAYERS_GC_MODE_ALL || gc_mode == LAYERS_GC_MODE_FAV)
                         {
-                            uint32_t fav_ids[MAX_SATELLITES];
+                            /* static: keeps this large buffer off the stack */
+                            static uint32_t fav_ids[MAX_SATELLITES_HARD_CAP];
                             int fav_count = (gc_mode == LAYERS_GC_MODE_FAV)
-                                ? GetFavoriteIds(fav_ids, MAX_SATELLITES) : 0;
+                                ? GetFavoriteIds(fav_ids, MAX_SATELLITES_HARD_CAP) : 0;
 
                             BeginShaderMode(g_coverage_shaders.shader2D);
                             rlBegin(RL_TRIANGLES);
@@ -2075,13 +2342,7 @@ int main(void)
                     }
                 }
 
-                /* Future ground tracks share a fixed propagation budget in Multi/Fav mode.
-                 * The focused satellite keeps the original resolution; the remaining budget
-                 * is split across however many other satellites are in scope (no fixed cap).
-                 * Fav mode draws a track for each favorite satellite in scope. */
-                /* unified Orbits layer: master kills all; the dimmed and fav-color
-                 * toggles drive which unselected/favourite extra ground tracks
-                 * render, matching the 3D orbit on/off + scope rules. */
+                // future ground tracks share a fixed propagation budget (focused sat keeps full resolution, the rest split the remainder); unified Orbits layer: master kills all, dimmed/fav-color toggles pick the extra tracks
                 const bool future_orbits_enabled =
                     ToolSettingGetBool(&cfg, LAYERS_KEY_ORBITS, true);
                 const bool orbits_dimmed = ToolSettingGetBool(&cfg, LAYERS_KEY_ORBITS_DIMMED, true);
@@ -2103,11 +2364,7 @@ int main(void)
                     (int)fminf(4000.0f, fmaxf(50.0f, 400.0f * future_orbit_span));
                 const int future_segment_budget = 6000;
 
-                /* dynamic set of extra (non-focused) satellites to draw future tracks
-                 * for: favourites are coloured with their palette colour when the
-                 * fav-color toggle is on; every other in-scope satellite gets a dimmed
-                 * orbit when the dimmed toggle is on. extra_track_is_fav is kept in
-                 * lockstep so the draw pass can tell the two tiers apart. */
+                // extra (non-focused) sats to draw future tracks for; extra_track_is_fav keeps the two tiers in lockstep
                 std::vector<const Satellite*> extra_track_sats;
                 std::vector<bool> extra_track_is_fav;
                 if (future_orbits_enabled && extra_orbits_enabled)
@@ -2131,9 +2388,7 @@ int main(void)
                             extra_track_is_fav.push_back(true);
                             continue; /* fav wins over dimmed; skip dimmed for this sat */
                         }
-                        /* dimmed unselected orbits: driven directly by the dimmed toggle,
-                         * so the toggle always works and dimmed orbits appear regardless
-                         * of any selection. */
+                        // dimmed unselected orbits: driven directly by the dimmed toggle
                         if (orbits_dimmed)
                         {
                             extra_track_sats.push_back(sat);
@@ -2159,120 +2414,172 @@ int main(void)
                 if (future_orbits_enabled && cfg.highlight_sunlit)
                     future_sun_dir = Vector3Normalize(calculate_sun_position(current_epoch));
 
-                /* render all satellites on 2d map */
-                for (int i = 0; i < sat_count; i++)
+                /* three passes: dimmed tracks, then important tracks, then satellite icons on top */
+                for (int pass = 0; pass < 3; pass++)
                 {
-                    if (!satellites[i].is_active)
-                        continue;
-                    bool is_unselected = (selected_sat != NULL && &satellites[i] != selected_sat);
-                    float sat_alpha = is_unselected ? unselected_fade : 1.0f;
-                    if (sat_alpha <= 0.0f)
-                        continue;
-
-                    bool is_hl = (active_sat == &satellites[i]);
-                    const auto extra_it =
-                        std::find(extra_track_sats.begin(), extra_track_sats.end(),
-                                  &satellites[i]);
-                    const bool extra_is_fav_color =
-                        extra_it != extra_track_sats.end() &&
-                        extra_track_is_fav[(size_t)(extra_it - extra_track_sats.begin())];
-                    const bool draw_future_track =
-                        future_orbits_enabled && satellites[i].mean_motion > 0.0 &&
-                        !(is_pov_mode && &satellites[i] == selected_sat) &&
-                        (is_hl || extra_it != extra_track_sats.end());
-
-                    Color sCol = (selected_sat == &satellites[i])
-                        ? g_theme.world.sat_selected
-                        : (hovered_sat == &satellites[i])
-                            ? g_theme.world.sat_hover
-                            : g_theme.world.sat;
-                    if (draw_future_track)
+                    for (int i = 0; i < sat_count; i++)
                     {
-                        sCol = is_hl ? g_theme.world.orbit_active
-                                     : (extra_is_fav_color ? MultiGroundTrackColor(i)
-                                                           : g_theme.world.orbit);
-                    }
-                    sCol = ApplyAlpha(sCol, sat_alpha);
+                        if (!satellites[i].is_active)
+                            continue;
+                        bool is_unselected = (selected_sat != NULL && &satellites[i] != selected_sat);
+                        float sat_alpha = is_unselected ? unselected_fade : 1.0f;
+                        if (sat_alpha <= 0.0f)
+                            continue;
 
-                    /* sunlit scope: Sel = active only, Fav = favorites only, All = everyone */
-                    bool apply_sunlit = sunlit_scope == LAYERS_ORBITS_SUNLIT_ALL ||
-                                        (sunlit_scope == LAYERS_ORBITS_SUNLIT_SELECTED && is_hl) ||
-                                        (sunlit_scope == LAYERS_ORBITS_SUNLIT_FAV &&
-                                         IsFavorite(satellites[i].norad_id_num));
+                        bool is_hl = (active_sat == &satellites[i]);
+                        const auto extra_it =
+                            std::find(extra_track_sats.begin(), extra_track_sats.end(),
+                                      &satellites[i]);
+                        const bool extra_is_fav_color =
+                            extra_it != extra_track_sats.end() &&
+                            extra_track_is_fav[(size_t)(extra_it - extra_track_sats.begin())];
+                        const bool draw_future_track =
+                            future_orbits_enabled && satellites[i].mean_motion > 0.0 &&
+                            !(is_pov_mode && &satellites[i] == selected_sat) &&
+                            (is_hl || extra_it != extra_track_sats.end());
+                        const bool track_important = is_hl || extra_is_fav_color;
 
-                    if (draw_future_track)
-                    {
-                        const int segments = is_hl ? requested_future_segments : extra_future_segments;
-                        Vector2 track_pts[4001];
-                        bool is_sunlit_arr[4001];
-
-                        const Color track_color = ApplyAlpha(
-                            is_hl ? g_theme.world.orbit_active
-                                  : (extra_is_fav_color ? MultiGroundTrackColor(i)
-                                                        : g_theme.world.orbit),
-                            sat_alpha);
-
-                        double period_days = (2.0 * PI / satellites[i].mean_motion) / 86400.0;
-                        double time_step = (period_days * future_orbit_span) / segments;
-
-                        for (int j = 0; j <= segments; j++)
+                        Color sCol = (selected_sat == &satellites[i])
+                            ? g_theme.world.sat_selected
+                            : (hovered_sat == &satellites[i])
+                                ? g_theme.world.sat_hover
+                                : g_theme.world.sat;
+                        if (draw_future_track)
                         {
-                            double t = (j == 0) ? current_epoch : (current_epoch - fmod(current_epoch, time_step) + (j * time_step));
-                            double t_unix = get_unix_from_epoch(t);
-                            Vector3 raw_pos = calculate_position(&satellites[i], t_unix);
-                            get_map_coordinates(raw_pos, epoch_to_gmst(t), cfg.earth_rotation_offset, map_w, map_h, &track_pts[j].x, &track_pts[j].y);
-
-                            if (cfg.highlight_sunlit && apply_sunlit)
-                            {
-                                is_sunlit_arr[j] = !is_sat_eclipsed(raw_pos, future_sun_dir);
-                            }
+                            sCol = is_hl ? g_theme.world.orbit_active
+                                         : (extra_is_fav_color ? MultiGroundTrackColor(i)
+                                                               : g_theme.world.orbit);
                         }
+                        /* orbit color is faint for lines; keep the satellite icon itself visible */
+                        if (sCol.a < g_theme.world.sat.a)
+                            sCol.a = g_theme.world.sat.a;
+                        sCol = ApplyAlpha(sCol, sat_alpha);
 
-                        for (int offset_i = first_copy; offset_i <= last_copy; offset_i++)
+                        /* sunlit scope: Sel = active only, Fav = favorites only, All = everyone */
+                        bool apply_sunlit = sunlit_scope == LAYERS_ORBITS_SUNLIT_ALL ||
+                                            (sunlit_scope == LAYERS_ORBITS_SUNLIT_SELECTED && is_hl) ||
+                                            (sunlit_scope == LAYERS_ORBITS_SUNLIT_FAV &&
+                                             IsFavorite(satellites[i].norad_id_num));
+
+                        /* pass 0 draws dimmed tracks, pass 1 draws important (active + favourite) tracks on top */
+                        const bool track_pass =
+                            (pass == 0 && !track_important) || (pass == 1 && track_important);
+
+                        if (draw_future_track && track_pass)
                         {
-                            float x_off = offset_i * map_w;
-                            for (int j = 1; j <= segments; j++)
+                            const int segments = is_hl ? requested_future_segments : extra_future_segments;
+                            Vector2 track_pts[4001];
+                            bool is_sunlit_arr[4001];
+                            double track_times[4001];
+
+                            const Color track_color = ApplyAlpha(
+                                is_hl ? g_theme.world.orbit_active
+                                      : (extra_is_fav_color ? MultiGroundTrackColor(i)
+                                                            : g_theme.world.orbit),
+                                sat_alpha);
+
+                            double period_days = (2.0 * PI / satellites[i].mean_motion) / 86400.0;
+                            if (!(period_days > 0.0))
+                                period_days = 1.0 / 1440.0;
+
+                            const bool want_sunlit = cfg.highlight_sunlit && apply_sunlit;
+                            const FutureTrackCacheEntry *ftc = GetFutureTrackSamples(
+                                &satellites[i], segments, future_orbit_span, current_epoch,
+                                cfg.earth_rotation_offset, map_w, map_h, want_sunlit, future_sun_dir);
+
+                            for (int j = 0; j <= segments; j++)
                             {
-                                if (fabs(track_pts[j].x - track_pts[j - 1].x) < map_w * 0.6f)
+                                track_pts[j] = ftc->pts[j];
+                                track_times[j] = ftc->times[j];
+                                if (want_sunlit)
+                                    is_sunlit_arr[j] = ftc->sunlit[j];
+                            }
+
+                            /* per-sample thingy, pain */
+                            bool in_transit[4001] = {false};
+                            if (num_passes > 0)
+                            {
+                                for (int j = 0; j <= segments; j++)
                                 {
-                                    Color drawCol = track_color;
-                                    if (cfg.highlight_sunlit && apply_sunlit && is_sunlit_arr[j])
-                                        drawCol = ApplyAlpha(g_theme.world.sat_hover, sat_alpha);
-                                    float track_w = is_hl ? 2.0f : (extra_is_fav_color ? 1.5f : 1.0f);
-                                    track_w /= Camera2DParams.zoom;
-                                    DrawLineEx((Vector2){track_pts[j - 1].x + x_off, track_pts[j - 1].y}, (Vector2){track_pts[j].x + x_off, track_pts[j].y}, track_w, drawCol);
+                                    const double te = track_times[j];
+                                    for (int pi = 0; pi < num_passes; pi++)
+                                    {
+                                        const SatPass &sp = passes[pi];
+                                        if (sp.sat != &satellites[i])
+                                            continue;
+                                        if (sp.los_epoch > sp.aos_epoch && te >= sp.aos_epoch && te <= sp.los_epoch)
+                                        {
+                                            in_transit[j] = true;
+                                            break;
+                                        }
+                                    }
                                 }
                             }
 
-                            if (cfg.show_apsides && is_hl)
+                            for (int offset_i = first_copy; offset_i <= last_copy; offset_i++)
                             {
-                                Vector2 peri2d, apo2d;
-                                get_apsis_2d(&satellites[i], current_epoch, false, gmst_deg, cfg.earth_rotation_offset, map_w, map_h, &peri2d);
-                                get_apsis_2d(&satellites[i], current_epoch, true, gmst_deg, cfg.earth_rotation_offset, map_w, map_h, &apo2d);
+                                float x_off = offset_i * map_w;
+                                for (int j = 1; j <= segments; j++)
+                                {
+                                    if (fabs(track_pts[j].x - track_pts[j - 1].x) < map_w * 0.6f)
+                                    {
+                                        Color drawCol = track_color;
+                                        if (cfg.highlight_sunlit && apply_sunlit && is_sunlit_arr[j])
+                                            drawCol = ApplyAlpha(g_theme.world.sat_hover, sat_alpha);
+                                        float track_w = is_hl ? 2.0f : (extra_is_fav_color ? 1.5f : 1.0f);
+                                        /* direction trail is a selected-orbit indicator: dimmed tracks stay flat */
+                                        if (is_hl || extra_is_fav_color)
+                                        {
+                                            const float dir_floor = is_hl ? ORBIT_DIR_MIN_SELECTED : ORBIT_DIR_MIN;
+                                            // 2D tracks only draw the future; anchor the trail at the sat and clamp so it never wraps
+                                            const double dir_phase = (track_times[j] - current_epoch) / period_days;
+                                            const double trail_phase = fmax(-dir_phase, -(double)ORBIT_DIR_TRAIL_LEN);
+                                            drawCol = ApplyOrbitDirection(drawCol, trail_phase, dir_floor);
+                                            /* keep the 2D trail thin: damp the width ramp the 3D-style width uses */
+                                            track_w *= 1.0f + (OrbitDirectionWidthScale(trail_phase, dir_floor) - 1.0f) * 0.2f;
+                                        }
+                                        /* transit accent wins over all other segment coloring */
+                                        if (in_transit[j - 1] || in_transit[j])
+                                            drawCol = g_theme.ui.accent;
+                                        track_w /= Camera2DParams.zoom;
+                                        DrawLineEx((Vector2){track_pts[j - 1].x + x_off, track_pts[j - 1].y}, (Vector2){track_pts[j].x + x_off, track_pts[j].y}, track_w, drawCol);
+                                    }
+                                }
 
-                                DrawTexturePro(
-                                    periMark, (Rectangle){0, 0, periMark.width, periMark.height}, (Rectangle){peri2d.x + x_off, peri2d.y, mark_size_2d, mark_size_2d},
-                                    (Vector2){mark_size_2d / 2.f, mark_size_2d / 2.f}, 0.0f, ApplyAlpha(g_theme.world.periapsis, sat_alpha)
-                                );
-                                DrawTexturePro(
-                                    apoMark, (Rectangle){0, 0, apoMark.width, apoMark.height}, (Rectangle){apo2d.x + x_off, apo2d.y, mark_size_2d, mark_size_2d},
-                                    (Vector2){mark_size_2d / 2.f, mark_size_2d / 2.f}, 0.0f, ApplyAlpha(g_theme.world.apoapsis, sat_alpha)
-                                );
+                                if (cfg.show_apsides && is_hl)
+                                {
+                                    Vector2 peri2d, apo2d;
+                                    get_apsis_2d(&satellites[i], current_epoch, false, gmst_deg, cfg.earth_rotation_offset, map_w, map_h, &peri2d);
+                                    get_apsis_2d(&satellites[i], current_epoch, true, gmst_deg, cfg.earth_rotation_offset, map_w, map_h, &apo2d);
 
+                                    DrawTexturePro(
+                                        periMark, (Rectangle){0, 0, periMark.width, periMark.height}, (Rectangle){peri2d.x + x_off, peri2d.y, mark_size_2d, mark_size_2d},
+                                        (Vector2){mark_size_2d / 2.f, mark_size_2d / 2.f}, 0.0f, ApplyAlpha(g_theme.world.periapsis, sat_alpha)
+                                    );
+                                    DrawTexturePro(
+                                        apoMark, (Rectangle){0, 0, apoMark.width, apoMark.height}, (Rectangle){apo2d.x + x_off, apo2d.y, mark_size_2d, mark_size_2d},
+                                        (Vector2){mark_size_2d / 2.f, mark_size_2d / 2.f}, 0.0f, ApplyAlpha(g_theme.world.apoapsis, sat_alpha)
+                                    );
+
+                                }
                             }
                         }
-                    }
 
-                    float sat_mx, sat_my;
-                    get_map_coordinates(satellites[i].current_pos, gmst_deg, cfg.earth_rotation_offset, map_w, map_h, &sat_mx, &sat_my);
-                    if (!(is_pov_mode && &satellites[i] == selected_sat))
-                    {
-                        for (int offset_i = first_copy; offset_i <= last_copy; offset_i++)
+                        /* pass 2: satellite icons stay on top of every track */
+                        if (pass == 2)
                         {
-                            DrawTexturePro(
-                                satIcon, (Rectangle){0, 0, satIcon.width, satIcon.height}, (Rectangle){sat_mx + (offset_i * map_w), sat_my, m_size_2d, m_size_2d},
-                                (Vector2){m_size_2d / 2.f, m_size_2d / 2.f}, 0.0f, sCol
-                            );
+                            float sat_mx, sat_my;
+                            get_map_coordinates(satellites[i].current_pos, gmst_deg, cfg.earth_rotation_offset, map_w, map_h, &sat_mx, &sat_my);
+                            if (!(is_pov_mode && &satellites[i] == selected_sat))
+                            {
+                                for (int offset_i = first_copy; offset_i <= last_copy; offset_i++)
+                                {
+                                    DrawTexturePro(
+                                        satIcon, (Rectangle){0, 0, satIcon.width, satIcon.height}, (Rectangle){sat_mx + (offset_i * map_w), sat_my, m_size_2d, m_size_2d},
+                                        (Vector2){m_size_2d / 2.f, m_size_2d / 2.f}, 0.0f, sCol
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -2401,9 +2708,28 @@ int main(void)
             earthModel.materials[0].shader = defaultEarthShader;
         }
 
-        /* black tint when the Earth texture layer is off, so the globe becomes a
-         * plain black body (the shader multiplies its output by the tint color) */
-        DrawModel(earthModel, Vector3Zero(), 1.0f, show_earth ? WHITE : BLACK);
+        if (show_earth)
+        {
+            /* textured Earth (shader selected above) */
+            DrawModel(earthModel, Vector3Zero(), 1.0f, WHITE);
+        }
+        else
+        {
+            /* textureless Earth: shaded, theme-derived solid body */
+            Color earth_base = ThemeEarthColor();
+            Vector4 earth_base_v = {
+                earth_base.r / 255.0f,
+                earth_base.g / 255.0f,
+                earth_base.b / 255.0f,
+                earth_base.a / 255.0f
+            };
+            earthModel.materials[0].shader = earthSolidShader;
+            SetShaderValue(earthSolidShader, earthSolidSunLoc, &sunEcef, SHADER_UNIFORM_VEC3);
+            SetShaderValue(earthSolidShader, earthSolidBaseLoc, &earth_base_v, SHADER_UNIFORM_VEC4);
+            DrawModel(earthModel, Vector3Zero(), 1.0f, WHITE);
+            /* restore default shader for later draw paths */
+            earthModel.materials[0].shader = defaultEarthShader;
+        }
 
         /* atmosphere/cloud layer */
         if (cfg.show_clouds)
@@ -2438,8 +2764,7 @@ int main(void)
             atmosphereModel.transform = MatrixRotateY(earth_rot_rad);
             SetShaderValue(shaderAtmosphere, sunDirLocAtmosphere, &sunEcef, SHADER_UNIFORM_VEC3);
             SetShaderValue(shaderAtmosphere, viewPosLocAtmosphere, &viewEcef, SHADER_UNIFORM_VEC3);
-            /* Same reasoning as the cloud shell: the atmosphere is a transparent
-             * glow and must not occlude the ground coverage. */
+            // like the cloud shell: transparent glow must not occlude the ground coverage
             rlDrawRenderBatchActive();
             rlDisableDepthMask();
             DrawModel(atmosphereModel, Vector3Zero(), 1.0f, WHITE);
@@ -2454,25 +2779,14 @@ int main(void)
 
             DrawModel(moonModel, draw_moon_pos, 1.0f, WHITE);
 
-            /* draw the sun on the skybox; the visible disc follows the Sunlight
-             * layer toggle (which also drives the night-side city lights) */
-            if (cfg.show_night_lights)
-            {
-                float sun_dist = 1200.0f;
-                float sun_radius = sun_dist * tanf((0.15f / 2.0f) * DEG2RAD);
-                Vector3 sun_pos_3d = Vector3Add(Camera3DParams.position, Vector3Scale(sunDirWorld, sun_dist));
-
-                DrawSphere(sun_pos_3d, sun_radius * 3.0f, ApplyAlpha((Color){ 255, 240, 200, 255 }, 0.25f));
-                DrawSphere(sun_pos_3d, sun_radius * 1.5f, (Color){ 255, 255, 220, 255 });
-            }
-
             /* Shader-based ground coverage rendering (3D) */
             if (cfg.show_ground_coverage && !(is_pov_mode && selected_sat != NULL))
             {
                 SetShaderValue(g_coverage_shaders.shader3D, g_coverage_shaders.cameraPosLoc,
                                &Camera3DParams.position, SHADER_UNIFORM_VEC3);
                 
-                Satellite *visible_sats[MAX_SATELLITES];
+                /* static: keeps this large buffer off the stack */
+                static Satellite *visible_sats[MAX_SATELLITES_HARD_CAP];
                 int visible_count = 0;
                 
                 if (gc_mode == LAYERS_GC_MODE_ALL)
@@ -2489,8 +2803,9 @@ int main(void)
                 }
                 else if (gc_mode == LAYERS_GC_MODE_FAV)
                 {
-                    uint32_t fav_ids[MAX_SATELLITES];
-                    int fav_count = GetFavoriteIds(fav_ids, MAX_SATELLITES);
+                    /* static: keeps this large buffer off the stack */
+                    static uint32_t fav_ids[MAX_SATELLITES_HARD_CAP];
+                    int fav_count = GetFavoriteIds(fav_ids, MAX_SATELLITES_HARD_CAP);
                     for (int i = 0; i < sat_count; i++)
                     {
                         if (!satellites[i].is_active)
@@ -2610,66 +2925,101 @@ int main(void)
             const bool orbits_fav_colored = ToolSettingGetBool(&cfg, LAYERS_KEY_FAV_ORBITS_3D, false);
             const int sunlit_scope = ToolSettingGetInt(&cfg, LAYERS_KEY_ORBITS_SUNLIT_SCOPE, LAYERS_ORBITS_SUNLIT_SELECTED);
 
-            uint32_t fav_ids[MAX_SATELLITES];
-            int fav_count = orbits_fav_colored ? GetFavoriteIds(fav_ids, MAX_SATELLITES) : 0;
+            /* static: keeps this large buffer off the stack */
+            static uint32_t fav_ids[MAX_SATELLITES_HARD_CAP];
+            int fav_count = orbits_fav_colored ? GetFavoriteIds(fav_ids, MAX_SATELLITES_HARD_CAP) : 0;
 
-            /* single orbit style per satellite: sunlit (per-seg) > highlight > fav-color > dimmed.
-             * One pass keeps exactly one color per orbit, never overlapping another. */
+            /* one orbit style per satellite: sunlit > highlight > fav-color > dimmed */
             if (orbits_enabled)
             {
-                for (int i = 0; i < sat_count; i++)
+                /* important pass draws with depth test off so dimmed orbits and the Earth can't occlude it */
+                for (int pass = 0; pass < 2; pass++)
                 {
-                    if (!satellites[i].is_active)
-                        continue;
-                    if (is_pov_mode && &satellites[i] == selected_sat)
-                        continue;
-                    bool is_hl = (active_sat == &satellites[i]);
-                    bool is_unselected = (selected_sat != NULL && &satellites[i] != selected_sat);
-                    float sat_alpha = is_unselected ? unselected_fade : 1.0f;
-                    if (sat_alpha <= 0.0f)
-                        continue;
-
-                    bool is_fav = false;
-                    int fav_index = 0;
-                    if (orbits_fav_colored)
+                    if (pass == 1)
                     {
-                        for (int k = 0; k < fav_count; k++)
+                        rlDrawRenderBatchActive();
+                        rlDisableDepthTest();
+                        rlDisableDepthMask();
+                    }
+
+                    for (int i = 0; i < sat_count; i++)
+                    {
+                        if (!satellites[i].is_active)
+                            continue;
+                        if (is_pov_mode && &satellites[i] == selected_sat)
+                            continue;
+                        bool is_hl = (active_sat == &satellites[i]);
+                        bool is_unselected = (selected_sat != NULL && &satellites[i] != selected_sat);
+                        float sat_alpha = is_unselected ? unselected_fade : 1.0f;
+                        if (sat_alpha <= 0.0f)
+                            continue;
+
+                        bool is_fav = false;
+                        int fav_index = 0;
+                        if (orbits_fav_colored)
                         {
-                            if (satellites[i].norad_id_num == fav_ids[k])
+                            for (int k = 0; k < fav_count; k++)
                             {
-                                is_fav = true;
-                                fav_index = k;
-                                break;
+                                if (satellites[i].norad_id_num == fav_ids[k])
+                                {
+                                    is_fav = true;
+                                    fav_index = k;
+                                    break;
+                                }
                             }
+                        }
+
+                        /* sunlit scope: Sel = active only, Fav = favorites only, All = everyone */
+                        bool apply_sunlit = sunlit_scope == LAYERS_ORBITS_SUNLIT_ALL ||
+                                            (sunlit_scope == LAYERS_ORBITS_SUNLIT_SELECTED && is_hl) ||
+                                            (sunlit_scope == LAYERS_ORBITS_SUNLIT_FAV &&
+                                             IsFavorite(satellites[i].norad_id_num));
+
+                        /* priority 2: highlighted (active) orbit outranks fav-color */
+                        if (is_hl)
+                        {
+                            if (pass == 1)
+                            {
+                                draw_orbit_3d(&satellites[i], current_epoch, true, sat_alpha, global_orbit_step, apply_sunlit, Camera3DParams.position);
+                                Vector3 draw_pos = Vector3Scale(satellites[i].current_pos, 1.0f / DRAW_SCALE);
+                                float ground_r = draw_earth_radius * 1.001f;
+                                Vector3 ground_pt = Vector3Scale(Vector3Normalize(draw_pos), ground_r);
+                                if (!IsOrbitSegmentOccluded(Camera3DParams.position, ground_pt, draw_pos, draw_earth_radius * 0.995f))
+                                {
+                                    rlDrawRenderBatchActive();
+                                    DrawLine3D(ground_pt, draw_pos, ApplyAlpha(g_theme.world.orbit_active, sat_alpha));
+                                    rlDrawRenderBatchActive();
+                                }
+                            }
+                            continue;
+                        }
+
+                        /* priority 3: fav-colored orbit outranks the dimmed unselected track */
+                        if (is_fav && orbits_fav_colored)
+                        {
+                            if (pass == 1)
+                            {
+                                Color fav_color = MultiGroundTrackColor(fav_index);
+                                draw_orbit_3d_colored(&satellites[i], current_epoch, fav_color, 0.9f, global_orbit_step, apply_sunlit, Camera3DParams.position);
+                            }
+                            continue;
+                        }
+
+                        /* dimmed/unselected orbit (first pass only) */
+                        if (pass == 0)
+                        {
+                            if (&satellites[i] != selected_sat && !orbits_dimmed)
+                                continue;
+                            draw_orbit_3d(&satellites[i], current_epoch, false, sat_alpha, global_orbit_step, apply_sunlit, Camera3DParams.position);
                         }
                     }
 
-                    /* sunlit scope: Sel = active only, Fav = favorites only, All = everyone */
-                    bool apply_sunlit = sunlit_scope == LAYERS_ORBITS_SUNLIT_ALL ||
-                                        (sunlit_scope == LAYERS_ORBITS_SUNLIT_SELECTED && is_hl) ||
-                                        (sunlit_scope == LAYERS_ORBITS_SUNLIT_FAV &&
-                                         IsFavorite(satellites[i].norad_id_num));
-
-                    /* priority 2: highlighted (active) orbit outranks fav-color */
-                    if (is_hl)
+                    if (pass == 1)
                     {
-                        draw_orbit_3d(&satellites[i], current_epoch, true, sat_alpha, global_orbit_step, apply_sunlit);
-                        Vector3 draw_pos = Vector3Scale(satellites[i].current_pos, 1.0f / DRAW_SCALE);
-                        DrawLine3D(Vector3Zero(), draw_pos, ApplyAlpha(g_theme.world.orbit_active, sat_alpha));
-                        continue;
+                        rlDrawRenderBatchActive();
+                        rlEnableDepthTest();
+                        rlEnableDepthMask();
                     }
-
-                    /* priority 3: fav-colored orbit outranks the dimmed unselected track */
-                    if (is_fav && orbits_fav_colored)
-                    {
-                        Color fav_color = MultiGroundTrackColor(fav_index);
-                        draw_orbit_3d_colored(&satellites[i], current_epoch, fav_color, 0.9f, global_orbit_step, apply_sunlit);
-                        continue;
-                    }
-
-                    if (&satellites[i] != selected_sat && !orbits_dimmed)
-                        continue;
-                    draw_orbit_3d(&satellites[i], current_epoch, false, sat_alpha, global_orbit_step, apply_sunlit);
                 }
             }
 
@@ -2682,71 +3032,11 @@ int main(void)
                 Vector3 h_pos3d = {cosf(h_lat_rad) * cosf(h_lon_rad) * draw_earth_radius, sinf(h_lat_rad) * draw_earth_radius, -cosf(h_lat_rad) * sinf(h_lon_rad) * draw_earth_radius};
                 Vector3 s_pos3d = Vector3Scale(active_sat->current_pos, 1.0f / DRAW_SCALE);
 
-                /* draw on top of the clouds / scattering / ground coverage
-                 * layers: flush the pending batch, then disable depth test so
-                 * those earlier-drawn shells do not occlude the line between
-                 * home and the satellite (the batch must be flushed while the
-                 * state is changed, otherwise the line is drawn later with
-                 * depth testing still enabled) */
+                // flush the batch, then disable depth test so the cloud/scattering/coverage shells don't occlude the line
                 rlDrawRenderBatchActive();
                 rlDisableDepthTest();
                 rlDisableDepthMask();
                 DrawLine3D(h_pos3d, s_pos3d, ApplyAlpha(g_theme.ui.accent, 0.6f));
-                rlDrawRenderBatchActive();
-                rlEnableDepthTest();
-                rlEnableDepthMask();
-            }
-
-            if (show_scope && home)
-            {
-                float h_lat_rad = home->lat * DEG2RAD;
-                float h_lon_rad = (home->lon + gmst_deg + cfg.earth_rotation_offset) * DEG2RAD;
-                
-                Vector3 h_pos3d = {
-                    cosf(h_lat_rad) * cosf(h_lon_rad) * draw_earth_radius, 
-                    sinf(h_lat_rad) * draw_earth_radius, 
-                    -cosf(h_lat_rad) * sinf(h_lon_rad) * draw_earth_radius
-                };
-
-                Vector3 up = Vector3Normalize(h_pos3d);
-                Vector3 east = {-sinf(h_lon_rad), 0.0f, -cosf(h_lon_rad)};
-                Vector3 north = {-cosf(h_lon_rad) * sinf(h_lat_rad), cosf(h_lat_rad), sinf(h_lon_rad) * sinf(h_lat_rad)};
-
-                float el_rad = scope_el * DEG2RAD;
-                float az_rad = scope_az * DEG2RAD;
-
-                Vector3 dir = Vector3Add(
-                    Vector3Add(Vector3Scale(north, cosf(el_rad) * cosf(az_rad)), 
-                               Vector3Scale(east, cosf(el_rad) * sinf(az_rad))),
-                    Vector3Scale(up, sinf(el_rad))
-                );
-                dir = Vector3Normalize(dir);
-
-                /* extend out to roughly GEO distance */
-                float cone_length = 25000.0f / DRAW_SCALE; 
-                float cone_radius = cone_length * tanf((scope_beam / 2.0f) * DEG2RAD);
-                Vector3 center_end = Vector3Add(h_pos3d, Vector3Scale(dir, cone_length));
-
-                Vector3 perp1 = Vector3CrossProduct(dir, up);
-                if (Vector3Length(perp1) < 0.01f) perp1 = Vector3CrossProduct(dir, north);
-                perp1 = Vector3Normalize(perp1);
-                Vector3 perp2 = Vector3CrossProduct(dir, perp1);
-
-                Color lineCol = ApplyAlpha(g_theme.ui.accent, 0.4f);
-
-                /* same overlay treatment as the slant range line: keep the
-                 * cone visible through clouds / scattering / footprint */
-                rlDrawRenderBatchActive();
-                rlDisableDepthTest();
-                rlDisableDepthMask();
-                for (int i = 0; i < 4; i++) {
-                    /* calculate 4 corners at 45, 135, 225, 315 degrees */
-                    float angle = (i * PI / 2.0f) + (PI / 4.0f);
-                    Vector3 pt = Vector3Add(center_end,
-                                    Vector3Add(Vector3Scale(perp1, cosf(angle) * cone_radius),
-                                               Vector3Scale(perp2, sinf(angle) * cone_radius)));
-                    DrawLine3D(h_pos3d, pt, lineCol);
-                }
                 rlDrawRenderBatchActive();
                 rlEnableDepthTest();
                 rlEnableDepthMask();
@@ -2765,6 +3055,8 @@ int main(void)
             float mark_size_3d = 32.0f * cfg.ui_scale;
 
             Vector3 camForward = Vector3Normalize(Vector3Subtract(Camera3DParams.target, Camera3DParams.position));
+
+            DrawSunOverlay(sunDirWorld, camForward, Camera3DParams, cfg);
 
             bool hide_apsis = (is_pov_mode && selected_sat != NULL && active_sat == selected_sat);
             if (cfg.show_apsides && active_sat && active_sat->is_active && !hide_apsis)
@@ -2841,10 +3133,12 @@ int main(void)
                                 }
                             }
                         }
+                        /* orbit color is faint for lines; keep the satellite icon itself visible */
+                        if (sCol.a < g_theme.world.sat.a)
+                            sCol.a = g_theme.world.sat.a;
                         sCol = ApplyAlpha(sCol, sat_alpha);
                         Vector2 sp = WorldToScreenViewport3D(draw_pos, Camera3DParams);
-                        /* rotate the icon so its bottom-right corner points toward the earth
-                         * (origin) in the current viewport (raylib rotation is in degrees) */
+                        // rotate the icon so its bottom-right corner points at Earth (raylib rotation is in degrees)
                         Vector2 earthScreen = WorldToScreenViewport3D(Vector3Zero(), Camera3DParams);
                         float sat_angle = (atan2f(earthScreen.y - sp.y, earthScreen.x - sp.x) * RAD2DEG) - 45.0f;
                         DrawTexturePro(satIcon, (Rectangle){0, 0, satIcon.width, satIcon.height}, (Rectangle){sp.x, sp.y, m_size_3d, m_size_3d}, (Vector2){m_size_3d / 2.f, m_size_3d / 2.f}, sat_angle, sCol);
@@ -2914,16 +3208,13 @@ int main(void)
             .is_auto_warping = &is_auto_warping,
             .auto_warp_target = &auto_warp_target,
             .auto_warp_initial_diff = &auto_warp_initial_diff,
+            .live_follow = &live_follow,
             .is_2d_view = &is_2d_view,
             .hide_unselected = &hide_unselected,
             .picking_home = &picking_home,
             .exit_app = &exit_app,
             .is_ecliptic_frame = &is_ecliptic_frame,
             .is_pov_mode = &is_pov_mode,
-            .show_scope = &show_scope,
-            .scope_az = &scope_az,
-            .scope_el = &scope_el,
-            .scope_beam = &scope_beam,
             .selected_sat = &selected_sat,
             .hovered_sat = hovered_sat,
             .active_sat = active_sat,
@@ -2935,25 +3226,19 @@ int main(void)
             .camera2d = &Camera2DParams,
             .camera3d = &Camera3DParams
         };
-        /* darken the background behind the settings modal.
-         * Replaced the expensive per-frame LoadImageFromScreen + Gaussian blur
-         * with a simple dark overlay — much cheaper, no font-atlas bleed-through,
-         * and still provides clear visual separation for the modal. */
+        // darken the background behind the settings modal (cheaper than the old blur, no font-atlas bleed)
         if (LayoutSettingsOpen())
         {
             DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(),
                           g_theme.ui.overlay);
         }
 
-        /* apply any completed async fetch results to the global satellite array.
-         * Runs on the UI thread so it is safe with the render loop. */
+        // apply completed async fetch results on the UI thread (safe with the render loop)
         AsyncFetchApplyResults();
 
         DrawGUI(&uiCtx, &cfg, customFont);
 
-        /* statistics overlay (enabled via Settings -> Show Statistics).
-         * Positioned in the top-left corner of the central 3D view: below the
-         * nav bar and to the right of the (visible) left sidebar. */
+        // statistics overlay: top-left of the central view, below the nav bar
         if (cfg.show_statistics)
         {
             float stat_size = 16.0f * cfg.ui_scale;
@@ -2983,15 +3268,7 @@ int main(void)
             DrawUIText(customFont, time_str, x, y, stat_size, g_theme.ui.text_dim);
         }
 
-        /* Demo Mode chrome (Esc hint, logo, letterbox, fade) */
-        if (DemoDirectorActive())
-            DemoDirectorDrawOverlay(logoTex, customFont, &cfg);
-
-        /* Night mode: single screen-space post-process pass. Everything above
-         * (3D/2D scene + raylib UI + ImGui) was drawn to the default MSAA
-         * framebuffer. Flush the queued raylib/rlImGui geometry, copy the
-         * resolved backbuffer into nightTex, then blit it back through the red
-         * shader. No intermediate render texture is involved. */
+        // night mode: flush queued geometry, copy the resolved backbuffer into nightTex, blit back through the red shader
         if (cfg.night_mode)
         {
             int nw = GetRenderWidth();
@@ -3018,8 +3295,7 @@ int main(void)
                     nightTex.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
                 }
 
-                /* make sure every queued raylib/rlImGui draw has landed in the
-                 * framebuffer before we copy it */
+                // ensure every queued draw has landed before copying
                 rlDrawRenderBatchActive();
 
                 /* GPU copy of the backbuffer colour (resolves MSAA) */
@@ -3027,8 +3303,7 @@ int main(void)
                 rlEnableTexture(nightTex.id);
                 glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, nw, nh);
 
-                /* draw one fullscreen quad through the red shader; the negative
-                 * source height flips the bottom-up GL copy back upright */
+                // fullscreen quad through the red shader; negative source height flips the bottom-up GL copy
                 float night_intensity = 1.0f;
                 SetShaderValue(shaderNight, nightIntensityLoc, &night_intensity, SHADER_UNIFORM_FLOAT);
                 BeginShaderMode(shaderNight);
@@ -3039,6 +3314,9 @@ int main(void)
                 EndShaderMode();
             }
         }
+
+        // Expo Mode overlay: after night mode so it stays full-colour
+        ExpoModeDrawOverlay(logoTex, customFont, &cfg, (Rectangle){vp_x, vp_y, vp_w, vp_h});
 
         EndDrawing();
     }
@@ -3052,10 +3330,13 @@ int main(void)
     UnloadTexture(earthTexture);
     UnloadTexture(earthNightTexture);
     UnloadTexture(skyboxTexture);
+    if (g_sunGlowTex.id != 0)
+        UnloadTexture(g_sunGlowTex);
     UnloadModel(skyboxModel);
     UnloadModel(earthModel);
     UnloadShader(shader3D);
     UnloadShader(shader2D);
+    UnloadShader(earthSolidShader);
     UnloadShader(shaderNight);
     if (nightTex.id != 0)
         UnloadTexture(nightTex);
@@ -3077,10 +3358,12 @@ int main(void)
     LayoutFillPersist(&cfg.ui_layout);
     RotatorSaveSettings(&cfg); /* copy live rotator settings into cfg */
     SaveSatSelection(&cfg);    /* copy live active-satellite selection into cfg */
+    cfg.show_ecliptic_frame = is_ecliptic_frame; /* copy live ecliptic-frame state into cfg */
     SaveAppConfig("settings.json", &cfg);
 
     SaveDataSelections();
     SaveFavorites("favorites.json"); /* persist favorite satellites */
+    SimScanShutdown();
     AsyncFetchShutdown();
     RotatorShutdown();
     LogShutdown();

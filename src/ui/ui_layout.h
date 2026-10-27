@@ -22,6 +22,9 @@
 
 /* -- Runtime layout state -------------------------------------------------- */
 
+/* a screen-space rectangle captured during the layout pass; valid=false when not drawn this frame */
+typedef struct { float x0, y0, x1, y1; bool valid; } UIRect;
+
 typedef struct
 {
     /* sidebar geometry */
@@ -44,6 +47,15 @@ typedef struct
     /* panel enabled (completely shown/hidden in sidebar) indexed by PanelId */
     bool panel_enabled[PANEL_COUNT];
 
+    /* screen-space rects captured each frame during the layout pass (valid=false when not drawn) */
+    UIRect panel_rect[PANEL_COUNT];         /* panel band (header top .. content bottom) */
+    UIRect panel_header_rect[PANEL_COUNT];  /* just the clickable title bar */
+    UIRect sidebar_rect[2];                 /* [0]=left, [1]=right inner sidebar rect */
+    UIRect notch_rect[2];                   /* [0]=left, [1]=right edge notch tab */
+    UIRect tools_btn_rect;                  /* top-bar "Tools" menu item */
+    UIRect settings_btn_rect;               /* top-bar "Settings" menu item */
+    UIRect view_toggle_rect;                /* top-bar 2D/3D view switch    */
+
     /* drag-reorder runtime state */
     int drag_panel;          /* PanelId currently dragged, -1 = none */
     bool drag_is_left;
@@ -55,25 +67,16 @@ typedef struct
     /* tools modal */
     bool tools_open;
 
+    /* most-recently-activated tool panel; -1 = none */
+    int last_active_panel;
+
     /* H key clean view: every chrome element hidden (sidebars, bottom bar, nav bar, edge notches) */
     bool clean_view;
 
     /* bottom bar visibility (View menu) */
     bool show_bottom_bar;
 
-    /* bottom bar expanded panel state */
-    bool bottom_bar_expanded;  /* whether the time-setting panel is shown */
-    int bb_year;               /* year input field */
-    int bb_day;                /* day-of-year input field (1-366) */
-    int bb_hour;               /* hour input field (0-23) */
-    int bb_min;                /* minute input field (0-59) */
-    int bb_sec;                /* second input field (0-59) */
-
-    /* actual rendered rect of the bottom-bar notch (ImGui display coords),
-     * captured each frame by DrawBottomBar(). The notch is centered and only
-     * spans part of the screen width, so the sidebars normally extend past it
-     * to the screen bottom; they only stop at its top edge when they
-     * horizontally overlap it (narrow windows / very wide sidebars). */
+    /* rendered rect of the bottom-bar notch (ImGui coords), captured each frame by DrawBottomBar() */
     float bottom_bar_x;        /* left edge of the notch  */
     float bottom_bar_w;        /* width of the notch      */
     float bottom_bar_top;      /* top edge of the notch   */
@@ -111,6 +114,10 @@ void DrawToolsModal(UIContext *ctx, AppConfig *cfg);
 void LayoutTogglePanel(PanelId id);
 void LayoutOpenPanel(PanelId id);
 bool LayoutIsPanelOpen(PanelId id);
+
+bool LayoutCloseActivePanel(void);
+
+int LayoutGetActivePanel(void);
 void LayoutSetPanelSide(PanelId id, SidebarSide side);
 SidebarSide LayoutPanelCurrentSide(PanelId id);
 
@@ -136,5 +143,16 @@ void LayoutSetSidebarVisible(SidebarSide side, bool visible);
 
 /* central canvas rect (logical screen coords); any out pointer may be NULL */
 void LayoutGetViewportRect(float *x, float *y, float *w, float *h);
+
+/* on-screen element rects captured during the layout pass (for coachmarks/hint system).
+ * Each returns out->valid and copies *out = {0} (valid=false) when the element was
+ * not drawn this frame. */
+bool LayoutGetPanelRect(PanelId id, UIRect *out);
+bool LayoutGetPanelHeaderRect(PanelId id, UIRect *out);
+bool LayoutGetSidebarRect(SidebarSide side, UIRect *out);
+bool LayoutGetNotchRect(SidebarSide side, UIRect *out);
+bool LayoutGetToolsButtonRect(UIRect *out);
+bool LayoutGetSettingsButtonRect(UIRect *out);
+bool LayoutGetViewToggleRect(UIRect *out);
 
 #endif /* UI_LAYOUT_H */

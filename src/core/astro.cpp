@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <time.h>
+#include <chrono>
 
 #define CSGP4_IMPLEMENTATION
 #include "../../lib/csgp4.h"
@@ -42,8 +43,23 @@ static void eci_to_ecef(Vector3 eci, double gmst_deg, double *ox, double *oy, do
     *oz = eci.y;
 }
 
-Satellite satellites[MAX_SATELLITES];
+Satellite satellites[MAX_SATELLITES_HARD_CAP];
 int sat_count = 0;
+
+/* runtime-configurable satellite limit (see astro.h) */
+static int s_max_satellites = DEFAULT_MAX_SATELLITES;
+
+int GetMaxSatellites(void)
+{
+    return s_max_satellites;
+}
+
+void SetMaxSatellites(int value)
+{
+    if (value < MIN_MAX_SATELLITES) value = MIN_MAX_SATELLITES;
+    if (value > MAX_SATELLITES_HARD_CAP) value = MAX_SATELLITES_HARD_CAP;
+    s_max_satellites = value;
+}
 
 SatPass passes[MAX_PASSES];
 int num_passes = 0;
@@ -53,8 +69,7 @@ Satellite *last_pass_calc_sat = NULL;
 float pass_min_elev = 0.0f;        /* minimum elevation (deg) for a pass to count */
 float pass_time_span_hours = 24.0f; /* prediction window in hours (default 24) */
 
-/* display preference: show dates/times in the system local timezone.
- * Backend math (SGP4, GMST, sun/moon, epoch conversions) always stays UTC. */
+// display dates/times in the local timezone; backend math stays UTC
 static bool g_use_local_time = true;
 
 void SetUseLocalTime(bool use_local) { g_use_local_time = use_local; }
@@ -78,8 +93,25 @@ double get_current_real_time_epoch(void)
     double day_of_year = gmt->tm_yday + 1.0;
     double fraction_of_day = (gmt->tm_hour + gmt->tm_min / 60.0 + gmt->tm_sec / 3600.0) / 24.0;
 
-    /* returns full YYYY format for global time consistency,
-       then we use the YY format for SGP4 data internally. */
+    // full YYYY for global consistency; YY is used for SGP4 internally
+    return (year * 1000.0) + day_of_year + fraction_of_day;
+}
+
+// sub-second variant of get_current_real_time_epoch(); system_clock is UTC wall time
+double get_current_real_time_epoch_hr(void)
+{
+    auto now = std::chrono::system_clock::now();
+    time_t secs = std::chrono::system_clock::to_time_t(now);
+    struct tm *gmt = gmtime(&secs);
+
+    /* sub-second remainder relative to the whole second reported by gmtime */
+    auto since_sec = now - std::chrono::system_clock::from_time_t(secs);
+    double sub_sec = std::chrono::duration<double>(since_sec).count();
+
+    int year = gmt->tm_year + 1900;
+    double day_of_year = gmt->tm_yday + 1.0;
+    double fraction_of_day = (gmt->tm_hour + gmt->tm_min / 60.0 + gmt->tm_sec / 3600.0 + sub_sec / 3600.0) / 24.0;
+
     return (year * 1000.0) + day_of_year + fraction_of_day;
 }
 
@@ -141,8 +173,7 @@ double epoch_to_gmst(double epoch)
     return gmst;
 }
 
-/** pretty-print for the ui so humans can actually read the time.
- *  Respects the local-time display preference; the underlying epoch stays UTC. */
+// pretty-print epoch for the UI; respects the local-time preference
 void epoch_to_datetime_str(double epoch, char *buffer)
 {
     time_t t = (time_t)get_unix_from_epoch(epoch);
@@ -155,14 +186,10 @@ void epoch_to_datetime_str(double epoch, char *buffer)
 
     if (g_use_local_time)
     {
-        /* compact numeric UTC offset (e.g. +0200) instead of the long
-         * Windows timezone name like "Central European Summer Time" */
-        char tz_off[16] = "";
-        strftime(tz_off, sizeof(tz_off), "%z", tm_info);
-        if (tz_off[0] == '\0') strcpy(tz_off, "+0000");
-        sprintf(buffer, "%04d-%02d-%02d %02d:%02d:%02d UTC%s",
+        /* local display carries no zone suffix, it's the user's own clock */
+        sprintf(buffer, "%04d-%02d-%02d %02d:%02d:%02d",
                 tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
-                tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec, tz_off);
+                tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
     }
     else
     {
@@ -183,8 +210,8 @@ bool add_satellite_from_tle_to(Satellite *sats, int *count,
                                const char* line0, const char* line1, const char* line2, OrbitalDataMeta *meta)
 {
     if (!sats || !count) return false;
-    if (*count >= MAX_SATELLITES) {
-        LOG_WARN("Cannot add satellite - MAX_SATELLITES (%d) reached", MAX_SATELLITES);
+    if (*count >= GetMaxSatellites()) {
+        LOG_WARN("Cannot add satellite - max satellites (%d) reached", GetMaxSatellites());
         return false;
     }
     Satellite *sat = &sats[*count];
@@ -232,7 +259,6 @@ bool add_satellite_from_tle_to(Satellite *sats, int *count,
 
     sat->is_active = false;
 
-    // store metadata
     if (meta)
         sat->data_meta = *meta;
     else
@@ -277,21 +303,19 @@ bool add_satellite_from_omm_elements_to(Satellite *sats, int *count,
                                         double bstar, OrbitalDataMeta *meta)
 {
     if (!sats || !count) return false;
-    if (*count >= MAX_SATELLITES) {
-        LOG_WARN("Cannot add OMM satellite %s - MAX_SATELLITES (%d) reached", name, MAX_SATELLITES);
+    if (*count >= GetMaxSatellites()) {
+        LOG_WARN("Cannot add OMM satellite %s - max satellites (%d) reached", name, GetMaxSatellites());
         return false;
     }
     Satellite *sat = &sats[*count];
     memset(sat, 0, sizeof(Satellite));
 
-    // copy identification
     strncpy(sat->name, name, sizeof(sat->name) - 1);
     strncpy(sat->norad_id, norad_id, sizeof(sat->norad_id) - 1);
     sat->norad_id_num = (uint32_t)atoi(norad_id);
     if (intl_desig)
         strncpy(sat->intl_designator, intl_desig, sizeof(sat->intl_designator) - 1);
 
-    // store orbital elements
     sat->epoch_days = epoch;
     sat->epoch_unix = get_unix_from_epoch(epoch);
     sat->inclination = inclination_deg * DEG2RAD;
@@ -304,7 +328,6 @@ bool add_satellite_from_omm_elements_to(Satellite *sats, int *count,
     sat->bstar = bstar;
     sat->is_active = false;
 
-    // store metadata
     if (meta)
         sat->data_meta = *meta;
     else
@@ -329,17 +352,11 @@ bool add_satellite_from_omm_elements_to(Satellite *sats, int *count,
 /** bulk loading of orbital data from structured storage */
 void load_orbital_data(const char *filename)
 {
-    // try loading from the new structured storage first
-    if (LoadOrbitalData(filename, satellites, &sat_count, MAX_SATELLITES))
+    if (LoadOrbitalData(filename, satellites, &sat_count, GetMaxSatellites()))
     {
         LOG_INFO("Loaded %d satellites from %s", sat_count, filename);
 
-        // Re-init SGP4 for every satellite from stored orbital elements.
-        // NOTE: we must init ALL satellites, not just the currently-active ones,
-        // because LoadSatSelection() (called later in main.cpp) may activate
-        // satellites that were inactive in data.json. If their SGP4 state is not
-        // initialized here, calculate_position() returns NaN and the satellite
-        // gets deactivated again (and its orbit cache is never built).
+        // init ALL satellites (not just active): LoadSatSelection() may activate inactive ones later
         for (int i = 0; i < sat_count; i++)
         {
             Satellite *sat = &satellites[i];
@@ -359,7 +376,7 @@ void load_orbital_data(const char *filename)
 /** bulk loading of orbital data from an in-memory JSON string (no disk access) */
 void load_orbital_data_from_string(const char *json)
 {
-    if (LoadOrbitalDataFromString(json, satellites, &sat_count, MAX_SATELLITES))
+    if (LoadOrbitalDataFromString(json, satellites, &sat_count, GetMaxSatellites()))
     {
         LOG_INFO("Loaded %d satellites from in-memory orbital data", sat_count);
 
@@ -517,13 +534,10 @@ void get_apsis_times(Satellite *sat, double current_time, double *out_peri_unix,
 /** calculates cache resolution based on orbital eccentricity */
 int calculate_orbit_cache_resolution(double eccentricity)
 {
-    // low eccentricity
     if (eccentricity < 0.05)
         return 180;
-    // moderate eccentricity
     if (eccentricity < 0.3)
         return 270;
-    // high eccentricity
     return 361;
 }
 
@@ -537,6 +551,75 @@ bool is_orbit_cache_valid(Satellite *sat, Vector3 current_pos, float drift_thres
     return drift < drift_threshold_km;
 }
 
+/** solves Kepler's equation M = E - e*sin(E) for E (Newton, valid for e < 1) */
+static double solve_kepler_eccentric(double M, double e)
+{
+    double E = M;
+    for (int i = 0; i < 8; i++)
+    {
+        double f = E - e * sin(E) - M;
+        double fp = 1.0 - e * cos(E);
+        if (fabs(fp) < 1e-12)
+            break;
+        double d = f / fp;
+        E -= d;
+        if (fabs(d) < 1e-12)
+            break;
+    }
+    return E;
+}
+
+/** adaptive sample epochs: uniform in eccentric anomaly, so points bunch up near perigee */
+void orbit_adaptive_sample_times(const Satellite *sat, double start_epoch, int n,
+                                 double span_orbits, double *out_times)
+{
+    if (n <= 0)
+        return;
+    if (n == 1)
+    {
+        out_times[0] = start_epoch;
+        return;
+    }
+
+    double start_unix = get_unix_from_epoch(start_epoch);
+    SatPropElements el;
+    sat_prop_elements(sat, start_unix, &el);
+
+    double e = el.ecc;
+    if (!(e >= 0.0))
+        e = 0.0;
+    if (e > 0.95)
+        e = 0.95;
+
+    double n_rad_min = el.mean_motion;
+    if (!(n_rad_min > 0.0))
+        n_rad_min = sat->mean_motion * 60.0;
+
+    // no usable mean motion: fall back to uniform time spacing
+    if (!(n_rad_min > 0.0))
+    {
+        double period_days = (2.0 * PI / sat->mean_motion) / 86400.0;
+        if (!(period_days > 0.0))
+            period_days = 1.0 / 1440.0;
+        for (int k = 0; k < n; k++)
+            out_times[k] = start_epoch + period_days * span_orbits * (double)k / (double)(n - 1);
+        return;
+    }
+
+    double M0 = fmod(el.mean_anom, 2.0 * PI);
+    if (M0 < 0.0)
+        M0 += 2.0 * PI;
+    double E0 = solve_kepler_eccentric(M0, e);
+
+    double total_E = 2.0 * PI * span_orbits;
+    for (int k = 0; k < n; k++)
+    {
+        double E = E0 + total_E * (double)k / (double)(n - 1);
+        double M = E - e * sin(E);
+        out_times[k] = start_epoch + ((M - M0) / n_rad_min) / 1440.0;
+    }
+}
+
 /** bakes the future orbital path into a vertex buffer so sgp4 isnt re-run every frame */
 void update_orbit_cache(Satellite *sat, double current_epoch)
 {
@@ -547,18 +630,22 @@ void update_orbit_cache(Satellite *sat, double current_epoch)
                   sat->name, sat->orbit_cache_resolution, new_res);
         sat->orbit_cache_resolution = new_res;
     }
-    
+
     double period_days = (2.0 * PI / sat->mean_motion) / 86400.0;
-    double time_step = period_days / (sat->orbit_cache_resolution - 1);
-    
+    if (!(period_days > 0.0))
+        period_days = 1.0 / 1440.0;
+
+    double sample_times[ORBIT_CACHE_SIZE];
+    orbit_adaptive_sample_times(sat, current_epoch, sat->orbit_cache_resolution, 1.0, sample_times);
+
     for (int i = 0; i < sat->orbit_cache_resolution; i++)
     {
-        double t = current_epoch + (i * time_step);
+        double t = sample_times[i];
         double t_unix = get_unix_from_epoch(t);
         sat->orbit_cache[i] = Vector3Scale(calculate_position(sat, t_unix), 1.0f / DRAW_SCALE);
+        sat->orbit_cache_phase[i] = (float)((t - current_epoch) / period_days);
     }
-    
-    // track cache validity
+
     double current_unix = get_unix_from_epoch(current_epoch);
     sat->cached_orbit_base_pos = calculate_position(sat, current_unix);
     sat->cached_orbit_epoch = current_epoch;
@@ -773,21 +860,37 @@ void CalculatePasses(Satellite *sat, double start_epoch)
 {
     num_passes = 0;
     last_pass_calc_sat = sat;
-    LOG_INFO("Calculating passes for %s starting at epoch %.2f",
-             sat ? sat->name : "ALL satellites", start_epoch);
+    LOG_DEBUG("Calculating passes for %s starting at epoch %.2f",
+              sat ? sat->name : "ALL satellites", start_epoch);
 
-    int target_count = sat ? 1 : sat_count;
     double coarse_step = sat ? (1.0 / 1440.0) : (4.0 / 1440.0);
 
-    for (int s = 0; s < target_count; s++)
+    if (sat)
     {
-        Satellite *current_sat = sat ? sat : &satellites[s];
-        CalculatePassesForSat(current_sat, start_epoch, coarse_step);
+        CalculatePassesForSat(sat, start_epoch, coarse_step);
+    }
+    else
+    {
+        /* cap all-active to avoid an SGP4 blowup on large catalogs */
+        const int MAX_ALL_ACTIVE_PASS_SATS = 100;
+
+        int active_processed = 0;
+
+        for (int s = 0; s < sat_count && active_processed < MAX_ALL_ACTIVE_PASS_SATS; s++)
+        {
+            Satellite *current_sat = &satellites[s];
+
+            if (!current_sat->is_active)
+                continue;
+
+            CalculatePassesForSat(current_sat, start_epoch, coarse_step);
+            active_processed++;
+        }
     }
 
     /* sort passes chronologically so the list actually makes sense */
     qsort(passes, num_passes, sizeof(SatPass), compare_passes);
-    LOG_INFO("Pass calculation complete: %d passes found", num_passes);
+    LOG_DEBUG("Pass calculation complete: %d passes found", num_passes);
 }
 
 /** predict passes for every favorite satellite (plus the selected one) and append them to the list */
@@ -795,10 +898,11 @@ void CalculatePassesFavorites(Satellite *selected, double start_epoch)
 {
     num_passes = 0;
     last_pass_calc_sat = NULL;
-    LOG_INFO("Calculating passes for all favorites + selection starting at epoch %.2f", start_epoch);
+    LOG_DEBUG("Calculating passes for all favorites + selection starting at epoch %.2f", start_epoch);
 
-    uint32_t fav_ids[MAX_SATELLITES];
-    const int fav_count = GetFavoriteIds(fav_ids, MAX_SATELLITES);
+    /* static: keeps this large buffer off the stack */
+    static uint32_t fav_ids[MAX_SATELLITES_HARD_CAP];
+    const int fav_count = GetFavoriteIds(fav_ids, MAX_SATELLITES_HARD_CAP);
     const double coarse_step = 4.0 / 1440.0;
 
     /* the currently selected satellite is included even if it is not a favorite */
@@ -831,11 +935,151 @@ void CalculatePassesFavorites(Satellite *selected, double start_epoch)
 
     /* sort passes chronologically so the list actually makes sense */
     qsort(passes, num_passes, sizeof(SatPass), compare_passes);
-    LOG_INFO("Pass calculation complete: %d passes found", num_passes);
+    LOG_DEBUG("Pass calculation complete: %d passes found", num_passes);
 }
 
-/** formats the internal epoch into a HH:MM:SS string for quick glancing.
- *  Respects the local-time display preference; the underlying epoch stays UTC. */
+bool EnsurePassesUpToDate(unsigned int mode, Satellite *selected,
+                          double start_epoch, bool force)
+{
+    /* hash the inputs that change the pass list (FNV-1a) */
+    unsigned int h = 2166136261u;
+    auto mix = [&h](unsigned int v) {
+        h ^= v;
+        h *= 16777619u;
+    };
+    auto mix64 = [&mix](uint64_t v) {
+        mix((unsigned int)(v & 0xffffffffu));
+        mix((unsigned int)(v >> 32));
+    };
+
+    mix(mode);
+    mix((unsigned int)(int)pass_min_elev);
+    mix((unsigned int)(int)pass_time_span_hours);
+
+    /* coarse 10-minute epoch bucket: lets the list drift without per-frame runs */
+    mix64((uint64_t)(start_epoch * 144.0));
+
+    Location *home = GetHomeLocation();
+    if (home) {
+        mix((unsigned int)(int)(home->lat * 1e4f));
+        mix((unsigned int)(int)(home->lon * 1e4f));
+        mix((unsigned int)(int)(home->alt * 1e2f));
+    }
+
+    if (selected) {
+        mix64((uint64_t)selected->norad_id_num);
+        mix64((uint64_t)(selected->epoch_unix));
+    } else {
+        mix64(0);
+    }
+
+    /* mode 0 with no selection: nothing to do (NULL would mean all-active) */
+    if (mode == 0 && selected == NULL)
+        return false;
+
+    static unsigned int s_last_h = 0;
+    static bool s_have_h = false;
+
+    if (!force && s_have_h && h == s_last_h)
+        return false;
+
+    switch (mode) {
+        case 0: /* selected satellite */
+            CalculatePasses(selected, start_epoch);
+            break;
+        case 1: /* all active */
+            CalculatePasses(NULL, start_epoch);
+            break;
+        default: /* favorites + selection */
+            CalculatePassesFavorites(selected, start_epoch);
+            break;
+    }
+
+    s_last_h = h;
+    s_have_h = true;
+    return true;
+}
+
+/* elevation (deg) of a satellite above the home location at a given epoch */
+static double PassElevationDeg(Satellite *sat, const Location *home, double epoch)
+{
+    double az, el;
+    get_az_el(calculate_position(sat, get_unix_from_epoch(epoch)), epoch_to_gmst(epoch),
+              home->lat, home->lon, home->alt, &az, &el);
+    return el;
+}
+
+void GetFullPassWindow(Satellite *sat, double aos_epoch, double los_epoch,
+                       double *out_aos, double *out_los)
+{
+    *out_aos = aos_epoch;
+    *out_los = los_epoch;
+    if (!sat || pass_min_elev <= 0.0f)
+        return; /* already horizon-to-horizon */
+
+    Location *home = GetHomeLocation();
+    if (!home)
+        return;
+
+    const double step = 1.0 / 1440.0; /* 1 minute */
+    const double max_span = 0.5;      /* cap the outward search at 12 hours */
+
+    /* walk backwards from AOS until the satellite drops below the horizon */
+    if (PassElevationDeg(sat, home, aos_epoch) > 0.0)
+    {
+        double t_hi = aos_epoch; /* el >= 0 */
+        double t = aos_epoch;
+        double limit = aos_epoch - max_span;
+        while (t > limit)
+        {
+            t -= step;
+            if (PassElevationDeg(sat, home, t) < 0.0)
+            {
+                double lo = t, hi = t_hi; /* lo: el<0, hi: el>=0 */
+                for (int b = 0; b < 20; b++)
+                {
+                    double mid = 0.5 * (lo + hi);
+                    if (PassElevationDeg(sat, home, mid) < 0.0)
+                        lo = mid;
+                    else
+                        hi = mid;
+                }
+                *out_aos = hi;
+                break;
+            }
+            t_hi = t;
+        }
+    }
+
+    /* walk forwards from LOS until the satellite drops below the horizon */
+    if (PassElevationDeg(sat, home, los_epoch) > 0.0)
+    {
+        double t_lo = los_epoch; /* el >= 0 */
+        double t = los_epoch;
+        double limit = los_epoch + max_span;
+        while (t < limit)
+        {
+            t += step;
+            if (PassElevationDeg(sat, home, t) < 0.0)
+            {
+                double lo = t_lo, hi = t; /* lo: el>=0, hi: el<0 */
+                for (int b = 0; b < 20; b++)
+                {
+                    double mid = 0.5 * (lo + hi);
+                    if (PassElevationDeg(sat, home, mid) < 0.0)
+                        hi = mid;
+                    else
+                        lo = mid;
+                }
+                *out_los = lo;
+                break;
+            }
+            t_lo = t;
+        }
+    }
+}
+
+// format epoch as HH:MM:SS; respects the local-time preference
 void epoch_to_time_str(double epoch, char *str)
 {
     time_t t = (time_t)get_unix_from_epoch(epoch);
@@ -850,8 +1094,7 @@ void epoch_to_time_str(double epoch, char *str)
     }
 }
 
-/** populate year / day-of-year / hour / min / sec fields for the time setter,
- *  honouring the local-time display preference. */
+// populate year/day-of-year/h:m:s for the time setter (local-time aware)
 void epoch_to_local_fields(double epoch, int *year, int *day, int *hour, int *min, int *sec)
 {
     time_t t = (time_t)get_unix_from_epoch(epoch);
@@ -864,8 +1107,7 @@ void epoch_to_local_fields(double epoch, int *year, int *day, int *hour, int *mi
     *sec  = tm_info->tm_sec;
 }
 
-/** convert user-entered local fields (year, day-of-year, h:m:s) back into a
- *  UTC-based epoch. When local time is disabled the fields are already UTC. */
+// convert user-entered local fields back to a UTC epoch
 double local_fields_to_epoch(int year, int day, int hour, int min, int sec)
 {
     if (!g_use_local_time)
@@ -904,10 +1146,7 @@ double local_fields_to_epoch(int year, int day, int hour, int min, int sec)
     return (utc->tm_year + 1900) * 1000.0 + (utc->tm_yday + 1) + day_fraction;
 }
 
-/**
- * @brief calculates the sun's position in ECI coordinates
- * @note this is a simplified model, validated against known ephemeris
- */
+// simplified sun position in ECI, validated against known ephemeris
 Vector3 calculate_sun_position(double current_time_days)
 {
     double unix_time = get_unix_from_epoch(current_time_days);
@@ -951,10 +1190,7 @@ bool is_sat_eclipsed(Vector3 pos_km, Vector3 sun_dir_norm)
     return dist_sq < (ASTRO_RE_SGP4 * ASTRO_RE_SGP4);
 }
 
-/**
- * @brief calculates the moon's position in ECI coordinates
- * @note includes evection, variation, and annual equation perturbations
- */
+// moon position in ECI; includes evection, variation and annual-equation perturbations
 Vector3 calculate_moon_position(double current_time_days)
 {
     double unix_time = get_unix_from_epoch(current_time_days);
@@ -1001,6 +1237,26 @@ Vector3 calculate_moon_position(double current_time_days)
     return pos;
 }
 
+/* samples the geocentric lunar orbit */
+void calculate_moon_orbit(double current_epoch, Vector3 *out_km, int count)
+{
+    if (!out_km || count <= 0)
+        return;
+
+    const double step = MOON_SIDEREAL_PERIOD_DAYS / (double)count;
+    for (int i = 0; i < count; i++)
+        out_km[i] = calculate_moon_position(current_epoch + i * step);
+
+    /* spread perturbations across the samples so the last point lands exactly on the first */
+    Vector3 end = calculate_moon_position(current_epoch + MOON_SIDEREAL_PERIOD_DAYS);
+    Vector3 err = Vector3Subtract(end, out_km[0]);
+    for (int i = 0; i < count; i++)
+    {
+        float f = (float)i / (float)count;
+        out_km[i] = Vector3Subtract(out_km[i], Vector3Scale(err, f));
+    }
+}
+
 // straight-line distance to a satellite
 double get_sat_range(Satellite *sat, double epoch, Location obs)
 {
@@ -1043,8 +1299,7 @@ double calculate_doppler_freq(Satellite *sat, double epoch, Location obs, double
     if (range < 1e-6)
         return base_freq;
 
-    // satellite velocity in the rotating ECEF frame: rotate ECI velocity, then
-    // subtract the Earth-rotation term (omega x r) so a GEO sat reads zero
+    // ECEF velocity: rotate ECI velocity, then subtract omega x r so a GEO sat reads zero
     double v_x, v_y, v_z;
     eci_to_ecef(vel, gmst, &v_x, &v_y, &v_z);
     v_x += ASTRO_EARTH_ROT * s_y;

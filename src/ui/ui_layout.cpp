@@ -13,13 +13,14 @@
 #include "tools/tools_common.h"
 #include "tools/tools_settings.h"
 #include "notifications.h"
+#include "tutorial.h"
 #include "core/astro.h"
 #include "core/theme.h"
 #include "core/config.h"
 #include "core/location.h"
 #include "data/curl_diagnostics.h"
 #include "util/log.h"
-#include "demo/demo_director.h"
+#include "expo/expo_mode.h"
 
 #include <raylib.h>
 #include <imgui.h>
@@ -111,7 +112,7 @@ void LayoutInitDefaults(void)
     g_layout.show_bottom_bar = true;
     g_layout.drag_panel = -1;
     g_layout.drag_target = -1;
-    g_layout.bottom_bar_expanded = false;
+    g_layout.last_active_panel = -1;
 
     int li = 0, ri = 0;
     for (int i = 0; i < PANEL_COUNT; i++)
@@ -132,8 +133,7 @@ void LayoutInitDefaults(void)
         g_layout.right_order[i] = -1;
 }
 
-/** Sanitise a panel order array: remove invalid IDs and duplicates,
- *  filling remaining slots with -1. Returns the number of valid entries. */
+/** sanitise a panel order array: drop invalid/duplicate ids, fill the rest with -1; returns the valid count */
 static int SanitiseOrder(int *order, int max_slots)
 {
     bool seen[PANEL_COUNT] = {false};
@@ -228,19 +228,26 @@ void LayoutTogglePanel(PanelId id)
 {
     if (id < 0 || id >= PANEL_COUNT) return;
     g_layout.panel_open[id] = !g_layout.panel_open[id];
-    if (g_layout.panel_open[id]) EnsureSidebar(g_panel_defs[id].default_side);
+    if (g_layout.panel_open[id])
+    {
+        g_layout.last_active_panel = id;
+        EnsureSidebar(g_panel_defs[id].default_side);
+    }
+    else if (g_layout.last_active_panel == id)
+    {
+        g_layout.last_active_panel = -1;
+    }
 }
 
 void LayoutOpenPanel(PanelId id)
 {
     if (id < 0 || id >= PANEL_COUNT) return;
     g_layout.panel_open[id] = true;
+    g_layout.last_active_panel = id;
     EnsureSidebar(g_panel_defs[id].default_side);
 }
 
-/** move a panel to the given sidebar, appending it to that side's order.
- *  Removes it from the source side's order first. Each sidebar can hold up
- *  to MAX_PANELS panels, so a move never evicts another panel. */
+/** move a panel to the given sidebar, appending it to that side's order */
 void LayoutSetPanelSide(PanelId id, SidebarSide side)
 {
     if (id < 0 || id >= PANEL_COUNT) return;
@@ -294,6 +301,95 @@ SidebarSide LayoutPanelCurrentSide(PanelId id)
 bool LayoutIsPanelOpen(PanelId id)
 {
     return (id >= 0 && id < PANEL_COUNT) ? g_layout.panel_open[id] : false;
+}
+
+int LayoutGetActivePanel(void)
+{
+    return g_layout.last_active_panel;
+}
+
+bool LayoutCloseActivePanel(void)
+{
+    int pid = g_layout.last_active_panel;
+    if (pid >= 0 && pid < PANEL_COUNT && g_layout.panel_open[pid])
+    {
+        g_layout.panel_open[pid] = false;
+        g_layout.last_active_panel = -1;
+        return true;
+    }
+    /* fall back to the first open panel when nothing is tracked */
+    for (int i = 0; i < PANEL_COUNT; i++)
+    {
+        if (g_layout.panel_open[i])
+        {
+            g_layout.panel_open[i] = false;
+            g_layout.last_active_panel = -1;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* -- Captured element rects (for coachmarks / the first-boot tutorial) ------ */
+
+bool LayoutGetPanelRect(PanelId id, UIRect *out)
+{
+    if (!out) return false;
+    *out = UIRect{};
+    if (id < 0 || id >= PANEL_COUNT) return false;
+    *out = g_layout.panel_rect[id];
+    return out->valid;
+}
+
+bool LayoutGetPanelHeaderRect(PanelId id, UIRect *out)
+{
+    if (!out) return false;
+    *out = UIRect{};
+    if (id < 0 || id >= PANEL_COUNT) return false;
+    *out = g_layout.panel_header_rect[id];
+    return out->valid;
+}
+
+bool LayoutGetSidebarRect(SidebarSide side, UIRect *out)
+{
+    if (!out) return false;
+    *out = UIRect{};
+    if (side != SIDEBAR_LEFT && side != SIDEBAR_RIGHT) return false;
+    *out = g_layout.sidebar_rect[side == SIDEBAR_LEFT ? 0 : 1];
+    return out->valid;
+}
+
+bool LayoutGetNotchRect(SidebarSide side, UIRect *out)
+{
+    if (!out) return false;
+    *out = UIRect{};
+    if (side != SIDEBAR_LEFT && side != SIDEBAR_RIGHT) return false;
+    *out = g_layout.notch_rect[side == SIDEBAR_LEFT ? 0 : 1];
+    return out->valid;
+}
+
+bool LayoutGetToolsButtonRect(UIRect *out)
+{
+    if (!out) return false;
+    *out = UIRect{};
+    *out = g_layout.tools_btn_rect;
+    return out->valid;
+}
+
+bool LayoutGetSettingsButtonRect(UIRect *out)
+{
+    if (!out) return false;
+    *out = UIRect{};
+    *out = g_layout.settings_btn_rect;
+    return out->valid;
+}
+
+bool LayoutGetViewToggleRect(UIRect *out)
+{
+    if (!out) return false;
+    *out = UIRect{};
+    *out = g_layout.view_toggle_rect;
+    return out->valid;
 }
 
 /* -- Sidebar visibility helpers --------------------------------------------- */
@@ -379,16 +475,37 @@ static HeaderSlot s_left_headers[MAX_PANELS];
 static HeaderSlot s_right_headers[MAX_PANELS];
 static int s_left_hc = 0, s_right_hc = 0;
 
-/* ========================================================================== */
-/*  Pull-tab                                                                  */
-/* ========================================================================== */
+// themed tooltip in the foreground draw list so it is never occluded
+static void NavTooltip(const char *text)
+{
+    if (!text || !text[0]) return;
+    ImGuiIO &io = ImGui::GetIO();
+    const float pad_x = UIPx(8.0f), pad_y = UIPx(5.0f), round = UIPx(4.0f);
+    const float off_x = UIPx(12.0f), off_y = UIPx(20.0f), max_w = UIPx(320.0f);
+
+    float wrap_w = max_w - 2.0f * pad_x;
+    ImVec2 ts = ImGui::CalcTextSize(text, NULL, false, wrap_w);
+    float w = ts.x + 2.0f * pad_x, h = ts.y + 2.0f * pad_y;
+
+    ImVec2 p(io.MousePos.x + off_x, io.MousePos.y + off_y);
+    p.x = fmaxf(UIPx(6.0f), fminf(p.x, io.DisplaySize.x - w - UIPx(6.0f)));
+    p.y = fmaxf(UIPx(6.0f), fminf(p.y, io.DisplaySize.y - h - UIPx(6.0f)));
+
+    ImU32 fill = IM_COL32(g_theme.ui.surface.r, g_theme.ui.surface.g, g_theme.ui.surface.b, 245);
+    ImU32 edge = IM_COL32(g_theme.ui.border.r,  g_theme.ui.border.g,  g_theme.ui.border.b,  200);
+    ImU32 col  = IM_COL32(g_theme.ui.text.r,    g_theme.ui.text.g,    g_theme.ui.text.b,    255);
+
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), fill, round);
+    dl->AddRect(p, ImVec2(p.x + w, p.y + h), edge, round, 0, UIPx(1.0f));
+    dl->AddText(NULL, 0.0f, ImVec2(p.x + pad_x, p.y + pad_y), col, text, NULL, wrap_w);
+}
 
 /* ========================================================================== */
 /*  Notch (show/hide tab)                                                     */
 /* ========================================================================== */
 
-/** Draw a small rounded notch at the edge of a hidden sidebar.
- *  Also draws a notch on the visible sidebar edge so the user can hide it. */
+/** draw the show/hide notch at a sidebar edge (also on the visible edge, to hide it) */
 static void DrawNotch(bool is_left, float nav_h, float content_h, bool sidebar_visible)
 {
     const float screen_w = ImGui::GetIO().DisplaySize.x;
@@ -403,10 +520,7 @@ static void DrawNotch(bool is_left, float nav_h, float content_h, bool sidebar_v
     float notch_x;
     if (sidebar_visible)
     {
-        /* notch sits at the inner edge of the visible sidebar, mostly
-         * sticking out into the canvas so it never covers panel controls.
-         * Left: 4px overlap into the sidebar (the rest sticks out right).
-         * Right: 4px overlap into the sidebar (the rest sticks out left). */
+        /* notch sits at the inner edge of the visible sidebar, mostly sticking out into the canvas */
         float sidebar_edge = is_left ? UIPx(g_layout.left_width) : (screen_w - UIPx(g_layout.right_width));
         notch_x = is_left ? (sidebar_edge - UIPx(4.0f)) : (sidebar_edge - notch_w + UIPx(4.0f));
     }
@@ -423,9 +537,7 @@ static void DrawNotch(bool is_left, float nav_h, float content_h, bool sidebar_v
     /* max distance the tab travels away from its attached edge while engaged */
     const float max_grow = UIPx(4.0f);
 
-    /* the window rect depends ONLY on the screen edge, never on the per-frame
-     * animation, so it is identical every frame and can never be moved by
-     * ImGui's position clamping; the detached edge stays exactly on the edge */
+    /* window rect depends only on the screen edge, never the animation, so ImGui can't clamp it */
     float win_x, win_w;
     if (is_left)
     {
@@ -453,8 +565,7 @@ static void DrawNotch(bool is_left, float nav_h, float content_h, bool sidebar_v
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
                      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground))
     {
-        /* absolute origin of the window (WindowPadding is 0); the animation
-         * only moves the drawn tab inside this frame-invariant window */
+        /* window origin (WindowPadding is 0); the animation only moves the drawn tab inside it */
         const ImVec2 o = ImGui::GetCursorScreenPos();
         float grow = max_grow * s_notch_anim[side];
         float tab_left  = is_left ? o.x : (o.x + max_grow - grow);
@@ -475,8 +586,7 @@ static void DrawNotch(bool is_left, float nav_h, float content_h, bool sidebar_v
 
         ImDrawList *dl = ImGui::GetWindowDrawList();
 
-        /* theme-aware colors (12.1): ui_primary fill, window_border border,
-         * ui_accent hover blend, text_secondary icon. */
+        /* theme-aware colors: surface fill, border stroke, accent hover blend, text_dim icon */
         auto lerp4 = [](const ImVec4 &a, const ImVec4 &b, float u) {
             return ImVec4(a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u,
                           a.z + (b.z - a.z) * u, a.w + (b.w - a.w) * u);
@@ -498,6 +608,9 @@ static void DrawNotch(bool is_left, float nav_h, float content_h, bool sidebar_v
         ImVec2 p0 = ImVec2(tab_left, o.y);
         ImVec2 p1 = ImVec2(tab_right, o.y + notch_h);
 
+        /* capture the tab rect for the tutorial coachmark */
+        g_layout.notch_rect[is_left ? 0 : 1] = { p0.x, p0.y, p1.x, p1.y, true };
+
         if (sidebar_visible)
         {
             float clip_x = is_left ? UIPx(g_layout.left_width)
@@ -508,13 +621,11 @@ static void DrawNotch(bool is_left, float nav_h, float content_h, bool sidebar_v
         }
 
         dl->AddRectFilled(p0, p1, ImGui::GetColorU32(fill), rounding, corners);
-        /* the 1px stroke is centered on the path, so inset it by 0.5px to stop
-         * the window clip rect trimming the outer half of the top/attached side */
+        /* inset the 1px stroke by 0.5px so the window clip rect doesn't trim its outer half */
         dl->AddRect(ImVec2(p0.x + 0.5f, p0.y + 0.5f), ImVec2(p1.x - 0.5f, p1.y - 0.5f),
                     ImGui::GetColorU32(bcol), rounding, corners, 1.0f);
 
-        /* chevron icon: points inward when the sidebar is visible (collapse),
-         * outward when it is hidden (expand). */
+        /* chevron points inward when visible (collapse), outward when hidden (expand) */
         const char *icon;
         if (sidebar_visible)
             icon = is_left ? ICON_FA_CHEVRON_LEFT : ICON_FA_CHEVRON_RIGHT;
@@ -571,7 +682,7 @@ static void DrawNotch(bool is_left, float nav_h, float content_h, bool sidebar_v
         {
             const char *tt = sidebar_visible ? (is_left ? "Hide left sidebar" : "Hide right sidebar")
                                              : (is_left ? "Show left sidebar" : "Show right sidebar");
-            ImGui::SetTooltip("%s", tt);
+            NavTooltip(tt);
         }
     }
     ImGui::End();
@@ -643,8 +754,7 @@ static void DrawResizeStrip(bool is_left, float nav_h, float content_h)
             if (is_left)
             {
                 *width = fmaxf(MIN_SIDEBAR_W, fminf(MAX_SIDEBAR_W, mouse_x / UIScale()));
-                /* deliberate snap-hide: only when the cursor is dragged fully
-                 * past the screen edge (12.1) - not merely near it */
+                /* snap-hide only when the cursor is dragged fully past the screen edge */
                 if (mouse_x <= 0.0f) { SnapHide(is_left); ImGui::End(); ImGui::PopStyleColor(); ImGui::PopStyleVar(4); return; }
             }
             else
@@ -676,6 +786,9 @@ static void DrawAccordionHeader(const PanelDef *def, bool *open, int order_idx, 
     bool hovered = ImGui::IsItemHovered();
     ImVec2 p0 = ImGui::GetItemRectMin();
     ImVec2 p1 = ImGui::GetItemRectMax();
+
+    /* capture the clickable title bar for the tutorial coachmark */
+    g_layout.panel_header_rect[def->id] = { p0.x, p0.y, p1.x, p1.y, true };
 
     /* background (theme-aware) */
     Color hdr_bg   = g_theme.ui.surface;
@@ -761,12 +874,7 @@ static void DrawAccordionHeader(const PanelDef *def, bool *open, int order_idx, 
 /*  Reorder finalisation                                                      */
 /* ========================================================================== */
 
-/** Map a "visible target" (a count of enabled, non-dragged header slots above
- *  the mouse) to a full-array insertion index. The order[] arrays contain both
- *  enabled and disabled panels (disabled ones are skipped at render time but
- *  still occupy a slot), so the visible count must be translated back into a
- *  real array position. Pass dragged = -1 when the panel is not in this array
- *  (e.g. when moving it into the other sidebar). */
+/** map a visible header target to a full-array insertion index (dragged = -1 if not in this array) */
 static int FindInsertIndex(int *order, int dragged, int visible_target)
 {
     int seen = 0;
@@ -950,6 +1058,9 @@ static void DrawSidebar(bool is_left, UIContext *ctx, AppConfig *cfg)
     float h = GetContentBottom(x0, x1) - y;
     if (h < UIPx(50.0f)) h = UIPx(50.0f);
 
+    /* capture the sidebar rect for the tutorial coachmark */
+    g_layout.sidebar_rect[is_left ? 0 : 1] = { x, y, x + width, y + h, true };
+
     ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(width, h), ImGuiCond_Always);
 
@@ -984,9 +1095,19 @@ static void DrawSidebar(bool is_left, UIContext *ctx, AppConfig *cfg)
             if (!g_layout.panel_enabled[pid]) continue;  /* skip disabled panels entirely */
 
             const PanelDef *def = &g_panel_defs[pid];
+            if (def->hidden) continue;  /* retired panel: never shown */
             bool is_open = g_layout.panel_open[pid];
 
+            ImVec2 panel_top = ImGui::GetCursorScreenPos();
             DrawAccordionHeader(def, &g_layout.panel_open[pid], i, is_left);
+
+            if (g_layout.panel_open[pid] != is_open)
+            {
+                if (g_layout.panel_open[pid])
+                    g_layout.last_active_panel = pid;
+                else if (g_layout.last_active_panel == pid)
+                    g_layout.last_active_panel = -1;
+            }
 
             if (is_open)
             {
@@ -997,6 +1118,12 @@ static void DrawSidebar(bool is_left, UIContext *ctx, AppConfig *cfg)
                 ImGui::Unindent(UIPx(6.0f));
                 ImGui::PopStyleVar();
             }
+            ImVec2 panel_bot = ImGui::GetCursorScreenPos();
+
+            /* capture the full panel band for the tutorial coachmark */
+            UIRect &pr = g_layout.panel_rect[pid];
+            float px0 = x + UIPx(3.0f), px1 = x + width - UIPx(3.0f);
+            pr = { px0, panel_top.y, px1, panel_bot.y, true };
 
             if (i < max - 1)
                 ImGui::Spacing();
@@ -1022,7 +1149,9 @@ static void DrawSidebar(bool is_left, UIContext *ctx, AppConfig *cfg)
 
 void DrawNavBar(UIContext *ctx, AppConfig *cfg)
 {
-    (void)cfg;
+    g_layout.tools_btn_rect.valid = false;
+    g_layout.settings_btn_rect.valid = false;
+    g_layout.view_toggle_rect.valid = false;
 
     if (g_layout.clean_view)
         return; /* H key clean view: no menu bar */
@@ -1067,12 +1196,16 @@ void DrawNavBar(UIContext *ctx, AppConfig *cfg)
             LayoutOpenTools();
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Manage tool panels");
+            NavTooltip("Manage tool panels");
+        /* capture the Tools menu item for the tutorial coachmark */
+        { ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+          g_layout.tools_btn_rect = { a.x, a.y, b.x, b.y, true }; }
 
         /* ---- Help menu --------------------------------------------------- */
         if (ImGui::BeginMenu(ICON_FA_CIRCLE_QUESTION "  Help"))
         {
             if (ImGui::MenuItem("Controls")) UIOpenHelp();
+            if (ImGui::MenuItem("Launch Tutorial")) TutorialLaunch(cfg);
             if (ImGui::MenuItem("GitHub Repository"))
                 OpenURL("https://github.com/aweeri/TLEscope");
             if (ImGui::MenuItem("About TLEscope")) UIOpenAbout();
@@ -1084,6 +1217,11 @@ void DrawNavBar(UIContext *ctx, AppConfig *cfg)
         {
             LayoutOpenSettings();
         }
+        if (ImGui::IsItemHovered())
+            NavTooltip("Preferences: theme, UI scale and your Home location");
+        /* capture the Settings menu item for the tutorial coachmark */
+        { ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+          g_layout.settings_btn_rect = { a.x, a.y, b.x, b.y, true }; }
 
         /* ---- 2D/3D view switch ------------------------------------------- */
         if (ctx->is_2d_view)
@@ -1097,7 +1235,10 @@ void DrawNavBar(UIContext *ctx, AppConfig *cfg)
                 LOG_INFO("View switched to %s", *ctx->is_2d_view ? "2D map" : "3D globe");
             }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Switch between the 2D map and the 3D globe (M)");
+                NavTooltip("Switch between the 2D map and the 3D globe (M)");
+            /* capture the view toggle for the tutorial coachmark */
+            { ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+              g_layout.view_toggle_rect = { a.x, a.y, b.x, b.y, true }; }
         }
 
         ImGui::EndMainMenuBar();
@@ -1110,17 +1251,14 @@ void DrawNavBar(UIContext *ctx, AppConfig *cfg)
 
 void DrawSettingsModal(UIContext *ctx, AppConfig *cfg)
 {
-    if (!g_layout.settings_open) return;
-
-    ImGui::OpenPopup("Settings");
-    /* fixed width + auto height: expanding/collapsing sections changes the
-     * height but never the width, so the modal doesn't "grow" sideways. */
+    if (g_layout.settings_open)
+        ImGui::OpenPopup("Settings");
+    /* fixed width + auto height so expanding sections never widen the modal */
     ImGui::SetNextWindowSize(ImVec2(UIPx(420.0f), 0), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2((float)GetScreenWidth() * 0.5f, (float)GetScreenHeight() * 0.5f),
                             ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 
-    /* p_open draws a native close button in the title bar; clicking it sets
-     * settings_open to false so the modal closes. */
+    /* p_open draws a native close button; clicking it clears settings_open */
     bool *p_open = &g_layout.settings_open;
     if (ImGui::BeginPopupModal("Settings", p_open, ImGuiWindowFlags_AlwaysAutoResize))
     {
@@ -1184,12 +1322,8 @@ void DrawSettingsModal(UIContext *ctx, AppConfig *cfg)
             ImGui::Checkbox("Limit Map Zoom-Out", &cfg->limit_map_zoomout);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Keep the 2D map filling the viewport by capping how far it can zoom out");
-            ImGui::Checkbox("VSync", &cfg->hint_vsync);
 
-            /* number of predicted (future) orbit steps drawn for each ground
-             * track in 2D mode. Float slider with a 0.25-orbit sub-step grid
-             * (snapped both on-screen and on write), default 2.0. */
-            ImGui::Separator();
+            /* predicted (future) orbit steps per ground track in 2D mode; 0.25-orbit grid, default 2.0 */
             float orbits_steps = ToolSettingGetFloat(cfg, LAYERS_KEY_FUTURE_ORBITS_STEPS,
                                                      LAYERS_FUTURE_ORBITS_STEPS_DEFAULT);
             orbits_steps = roundf(orbits_steps * 4.0f) / 4.0f; /* snap to 0.25 grid */
@@ -1222,6 +1356,13 @@ void DrawSettingsModal(UIContext *ctx, AppConfig *cfg)
                 SaveAppConfig("settings.json", cfg);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("First day of the week shown in the date-picker calendar");
+
+            /* compact time overlay shown while the UI is hidden (H) */
+            bool time_when_hidden = ToolSettingGetBool(cfg, "view.time_when_hidden", false);
+            if (ImGui::Checkbox("Show Time When UI Hidden", &time_when_hidden))
+                ToolSettingSetBool(cfg, "view.time_when_hidden", time_when_hidden);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Display the current time in the lower-left corner when the UI is hidden (H)");
         }
 
         /* ---- Performance section ----------------------------------------- */
@@ -1233,6 +1374,89 @@ void DrawSettingsModal(UIContext *ctx, AppConfig *cfg)
                 cfg->target_fps = (fps >= 240) ? 0 : fps;
             if (cfg->target_fps == 0)
                 ImGui::TextDisabled("Unlimited FPS");
+
+            ImGui::Checkbox("VSync", &cfg->hint_vsync);
+
+            ImGui::Separator();
+
+            int max_sats = cfg->max_satellites;
+            if (max_sats < MIN_MAX_SATELLITES) max_sats = MIN_MAX_SATELLITES;
+            if (max_sats > MAX_MAX_SATELLITES) max_sats = MAX_MAX_SATELLITES;
+
+            ImGui::Text("Maximum satellites:");
+            /* logarithmic scaling makes the wide 1000-100000 range usable */
+            if (ImGui::SliderInt("##max_satellites", &max_sats,
+                                 MIN_MAX_SATELLITES, MAX_MAX_SATELLITES,
+                                 "%d", ImGuiSliderFlags_Logarithmic))
+            {
+                cfg->max_satellites = max_sats;
+                SetMaxSatellites(max_sats);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Maximum number of satellites fetched and kept in memory.\n"
+                                  "Higher values use more memory. Takes effect on the next fetch/merge.");
+            if (ImGui::IsItemDeactivatedAfterEdit())
+                SaveAppConfig("settings.json", cfg);
+
+            ImGui::TextDisabled("Default: 50000. Range: 1000-100000. Higher values use more memory.");
+        }
+
+        /* ---- Data & Network section -------------------------------------- */
+        if (ImGui::CollapsingHeader("Data & Network"))
+        {
+            /* data staleness */
+            const char* stale_options[] = {
+                "6 hours", "12 hours", "1 day", "2 days (default)",
+                "3 days", "5 days", "7 days", "Never"
+            };
+            int stale_values[] = {
+                STALE_THRESHOLD_6H, STALE_THRESHOLD_12H, STALE_THRESHOLD_1D,
+                STALE_THRESHOLD_2D, STALE_THRESHOLD_3D, STALE_THRESHOLD_5D,
+                STALE_THRESHOLD_7D, STALE_THRESHOLD_NEVER
+            };
+            int current_stale_idx = 3;
+            for (int i = 0; i < 8; i++)
+            {
+                if (cfg->data_stale_threshold_seconds == stale_values[i])
+                {
+                    current_stale_idx = i;
+                    break;
+                }
+            }
+
+            ImGui::Text("Consider data outdated after:");
+            if (ImGui::Combo("##stale_threshold", &current_stale_idx, stale_options, 8))
+            {
+                cfg->data_stale_threshold_seconds = stale_values[current_stale_idx];
+            }
+
+            /* automatic re-pull: skipped entirely when staleness is "Never" */
+            bool stale_never = (cfg->data_stale_threshold_seconds <= STALE_THRESHOLD_NEVER);
+            ImGui::BeginDisabled(stale_never);
+            ImGui::Checkbox("Automatically re-pull stale data", &cfg->auto_repull_stale);
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("When enabled, stale data is re-pulled automatically and a\n"
+                                  "notification is shown, instead of asking for confirmation.\n"
+                                  "Ignored while staleness is set to \"Never\".");
+
+            ImGui::Separator();
+
+            /* network */
+            if (cfg->network_timeout_seconds < 15) cfg->network_timeout_seconds = 15;
+            if (cfg->network_timeout_seconds > 300) cfg->network_timeout_seconds = 300;
+
+            int timeout_seconds = cfg->network_timeout_seconds;
+            ImGui::Text("HTTP request timeout:");
+            if (ImGui::SliderInt("##network_timeout", &timeout_seconds, 15, 300, "%d s"))
+            {
+                cfg->network_timeout_seconds = timeout_seconds;
+                TLEscopeSetCurlTimeoutSeconds(timeout_seconds);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Maximum time for a network request. Default: 45 seconds. Connection timeout remains 15 seconds.");
+
+            ImGui::TextDisabled("Default: 45 s. Range: 15-300 s.");
         }
 
         /* ---- Locations section (single source of truth for markers + home) */
@@ -1337,54 +1561,6 @@ void DrawSettingsModal(UIContext *ctx, AppConfig *cfg)
             }
         }
 
-        /* ---- Data section ------------------------------------------------ */
-        if (ImGui::CollapsingHeader("Data"))
-        {
-            const char* stale_options[] = {
-                "6 hours", "12 hours", "1 day", "2 days (default)",
-                "3 days", "5 days", "7 days"
-            };
-            int stale_values[] = {
-                STALE_THRESHOLD_6H, STALE_THRESHOLD_12H, STALE_THRESHOLD_1D,
-                STALE_THRESHOLD_2D, STALE_THRESHOLD_3D, STALE_THRESHOLD_5D,
-                STALE_THRESHOLD_7D
-            };
-            int current_stale_idx = 3;
-            for (int i = 0; i < 7; i++)
-            {
-                if (cfg->data_stale_threshold_seconds == stale_values[i])
-                {
-                    current_stale_idx = i;
-                    break;
-                }
-            }
-
-            ImGui::Text("Consider data outdated after:");
-            if (ImGui::Combo("##stale_threshold", &current_stale_idx, stale_options, 7))
-            {
-                cfg->data_stale_threshold_seconds = stale_values[current_stale_idx];
-            }
-        }
-
-        /* ---- Network section --------------------------------------------- */
-        if (ImGui::CollapsingHeader("Network"))
-        {
-            if (cfg->network_timeout_seconds < 15) cfg->network_timeout_seconds = 15;
-            if (cfg->network_timeout_seconds > 300) cfg->network_timeout_seconds = 300;
-
-            int timeout_seconds = cfg->network_timeout_seconds;
-            ImGui::Text("HTTP request timeout:");
-            if (ImGui::SliderInt("##network_timeout", &timeout_seconds, 15, 300, "%d s"))
-            {
-                cfg->network_timeout_seconds = timeout_seconds;
-                TLEscopeSetCurlTimeoutSeconds(timeout_seconds);
-            }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Maximum time for a network request. Default: 45 seconds. Connection timeout remains 15 seconds.");
-
-            ImGui::TextDisabled("Default: 45 s. Range: 15-300 s.");
-        }
-
         /* ---- Notifications section (ROADMAP section 8.1) ---------------- */
         if (ImGui::CollapsingHeader("Notifications"))
         {
@@ -1412,21 +1588,31 @@ void DrawSettingsModal(UIContext *ctx, AppConfig *cfg)
                 NotifySetCategoryEnabled(NOTIFY_ERROR, cat_err);
         }
 
-        /* ---- Demo Mode section ------------------------------------------- */
-        if (ImGui::CollapsingHeader("Demo Mode"))
+        /* ---- Advanced section (niche / experimental options) ------------- */
+        if (ImGui::CollapsingHeader("Advanced"))
         {
-            if (ImGui::Button(ICON_FA_PLAY " Start Demo Mode", ImVec2(UIPx(200.0f), 0)))
-            {
-                g_layout.settings_open = false;
-                ImGui::CloseCurrentPopup();
-                DemoDirectorRequestStart();
-            }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Self-running cinematic showcase. Press Esc to exit.");
+            /* Expo Mode sub-group */
+            ImGui::TextDisabled("Expo Mode");
+
+            bool en = ExpoModeEnabled(cfg);
+            if (ImGui::Checkbox("Enable Expo Mode", &en)) { ExpoModeSetEnabled(cfg, en); SaveAppConfig("settings.json", cfg); }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Show the TLEscope + 'available on GitHub' overlay in the bottom-right corner.");
+
+            float sz = ExpoModeGetSize(cfg);
+            if (ImGui::SliderFloat("Overlay Size", &sz, EXPO_SIZE_MIN, EXPO_SIZE_MAX, "%.2fx")) ExpoModeSetSize(cfg, sz);
+            if (ImGui::IsItemDeactivatedAfterEdit()) SaveAppConfig("settings.json", cfg);
         }
 
         /* ---- Buttons ----------------------------------------------------- */
         ImGui::Separator();
+
+        if (ImGui::Button("Launch Tutorial", ImVec2(UIPx(140.0f), 0)))
+        {
+            g_layout.settings_open = false;
+            ImGui::CloseCurrentPopup();
+            TutorialLaunch(cfg);
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Replay the first-boot walkthrough");
 
         if (ImGui::Button("Save Settings", ImVec2(UIPx(140.0f), 0)))
         {
@@ -1450,9 +1636,7 @@ void DrawSettingsModal(UIContext *ctx, AppConfig *cfg)
 
 /* -- Tools modal row helper ------------------------------------------------ */
 
-/** draw one tool row: an enable/disable checkbox and a small left/right
- *  toggle aligned to the right edge of the row. Changes are saved
- *  immediately so the modal needs no explicit save button. */
+/** one tool row: enable checkbox + right-aligned left/right toggle; changes save immediately */
 static void DrawToolRow(const PanelDef *def, AppConfig *cfg)
 {
     bool enabled = g_layout.panel_enabled[def->id];
@@ -1503,15 +1687,13 @@ static void DrawToolRow(const PanelDef *def, AppConfig *cfg)
 void DrawToolsModal(UIContext *ctx, AppConfig *cfg)
 {
     (void)ctx;
-    if (!g_layout.tools_open) return;
-
-    ImGui::OpenPopup("Manage Tools");
+    if (g_layout.tools_open)
+        ImGui::OpenPopup("Manage Tools");
     ImGui::SetNextWindowSize(ImVec2(UIPx(460.0f), 0), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2((float)GetScreenWidth() * 0.5f, (float)GetScreenHeight() * 0.5f),
                             ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 
-    /* p_open draws a native close button in the title bar; clicking it sets
-     * tools_open to false so the modal closes. */
+    /* p_open draws a native close button; clicking it clears tools_open */
     bool *p_open = &g_layout.tools_open;
     if (ImGui::BeginPopupModal("Manage Tools", p_open, ImGuiWindowFlags_AlwaysAutoResize))
     {
@@ -1521,6 +1703,7 @@ void DrawToolsModal(UIContext *ctx, AppConfig *cfg)
             for (int i = 0; i < PANEL_COUNT; i++)
             {
                 const PanelDef *def = &g_panel_defs[i];
+                if (def->hidden) continue;
                 if (def->category != PANEL_CAT_CORE) continue;
                 DrawToolRow(def, cfg);
             }
@@ -1532,6 +1715,7 @@ void DrawToolsModal(UIContext *ctx, AppConfig *cfg)
             for (int i = 0; i < PANEL_COUNT; i++)
             {
                 const PanelDef *def = &g_panel_defs[i];
+                if (def->hidden) continue;
                 if (def->category != PANEL_CAT_EXTRA) continue;
                 DrawToolRow(def, cfg);
             }
@@ -1543,6 +1727,7 @@ void DrawToolsModal(UIContext *ctx, AppConfig *cfg)
             for (int i = 0; i < PANEL_COUNT; i++)
             {
                 const PanelDef *def = &g_panel_defs[i];
+                if (def->hidden) continue;
                 if (def->category != PANEL_CAT_DEBUG) continue;
                 DrawToolRow(def, cfg);
             }
@@ -1570,6 +1755,18 @@ void DrawUILayout(UIContext *ctx, AppConfig *cfg)
     s_left_hc = 0;
     s_right_hc = 0;
 
+    /* reset captured element rects */
+    for (int i = 0; i < PANEL_COUNT; i++)
+    {
+        g_layout.panel_rect[i].valid = false;
+        g_layout.panel_header_rect[i].valid = false;
+    }
+    for (int i = 0; i < 2; i++)
+    {
+        g_layout.sidebar_rect[i].valid = false;
+        g_layout.notch_rect[i].valid = false;
+    }
+
     DrawSidebar(true,  ctx, cfg);
     DrawSidebar(false, ctx, cfg);
 
@@ -1586,9 +1783,7 @@ void DrawUILayout(UIContext *ctx, AppConfig *cfg)
         DrawResizeStrip(false, nav_y, GetContentBottom(rx, display_w) - nav_y);
     }
 
-    /* show/hide notches — drawn last so they sit on top of everything.
-     * A notch appears on the visible sidebar edge (to hide it) and at the
-     * screen edge when the sidebar is hidden (to restore it). */
+    /* show/hide notches, drawn last so they sit on top of everything */
     float nav_h2 = ImGui::GetFrameHeight();
     /* content area height (below the nav bar) - used to center the notches */
     float content_h = ImGui::GetIO().DisplaySize.y - nav_h2;

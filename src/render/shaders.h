@@ -216,6 +216,26 @@ void main() {
 }
 )GLSL";
 
+/* shaded solid-body shader for the textureless Earth (Earth Texture off) */
+inline constexpr const char *fsEarthSolid3D = R"GLSL(#version 330
+in vec2 fragTexCoord;
+in vec4 fragColor;
+out vec4 finalColor;
+uniform vec3 sunDir;
+uniform vec4 baseColor;
+void main() {
+    float theta = (fragTexCoord.x - 0.5) * 6.28318530718;
+    float phi = fragTexCoord.y * 3.14159265359;
+    vec3 normal = normalize(vec3(cos(theta)*sin(phi), cos(phi), -sin(theta)*sin(phi)));
+
+    /* wrap the terminator slightly so the night side is never a black void */
+    float intensity = dot(normal, sunDir);
+    float light = mix(0.18, 1.0, smoothstep(-0.25, 0.25, intensity));
+
+    finalColor = vec4(baseColor.rgb * light, baseColor.a) * fragColor;
+}
+)GLSL";
+
 /**
  * @brief atmospheric scattering glow shader.
  */
@@ -269,14 +289,7 @@ void main() {
 }
 )GLSL";
 
-/**
- * @brief full-screen monochrome-red post-process (night / dark-adaptation mode).
- *
- * Reads the already-composited frame (3D scene + UI) and collapses it to a
- * single red channel. The strongest colour channel is used as luminance so
- * every hue stays visible (a pure blue or green UI element does not wash out).
- * `intensity` (0..1) scales the final brightness for dark adaptation.
- */
+// night mode: collapse the composited frame to red, using the strongest channel as luminance
 inline constexpr const char *fsNight = R"GLSL(#version 330
 in vec2 fragTexCoord;
 in vec4 fragColor;
@@ -286,6 +299,11 @@ uniform float intensity;
 void main() {
     vec4 c = texture(texture0, fragTexCoord);
     float l = max(c.r, max(c.g, c.b));
+    // tone curve: lift blacks, add mid-tone contrast
+    l = smoothstep(0.05, 1.0, l);
+    l = pow(l, 1.18);
+    l *= 1.06;
+    l = clamp((l - 0.5) * 1.12 + 0.5, 0.0, 1.0);
     finalColor = vec4(l * intensity, 0.0, 0.0, c.a);
 }
 )GLSL";

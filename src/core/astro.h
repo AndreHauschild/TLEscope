@@ -28,7 +28,12 @@ extern Satellite *last_pass_calc_sat;
 extern float pass_min_elev;        /* minimum elevation (deg) for a pass to count */
 extern float pass_time_span_hours; /* prediction window in hours (default 24) */
 
+// runtime satellite limit; SetMaxSatellites() clamps to [MIN_MAX_SATELLITES, MAX_SATELLITES_HARD_CAP]
+int GetMaxSatellites(void);
+void SetMaxSatellites(int value);
+
 double get_current_real_time_epoch(void);
+double get_current_real_time_epoch_hr(void);
 double epoch_to_gmst(double epoch);
 void epoch_to_datetime_str(double epoch, char *buffer);
 
@@ -47,9 +52,7 @@ bool add_satellite_from_omm_elements(const char *name, const char *norad_id,
                                      double mean_anomaly_deg, double mean_motion_revday,
                                      double bstar, OrbitalDataMeta *meta);
 
-// Buffer-based variants that write into an array instead of the
-// global `satellites[]`, used by the async fetch worker thread so it never
-// touches the global array because the render loop touches that every frame
+// buffer-based variants for the async fetch worker (never touch the global array)
 bool add_satellite_from_tle_to(Satellite *sats, int *count,
                                const char* line0, const char* line1,
                                const char* line2, OrbitalDataMeta *meta);
@@ -72,6 +75,11 @@ void get_map_coordinates(Vector3 pos, double gmst_deg, float earth_offset, float
 Vector3 calculate_position(Satellite *sat, double current_unix);
 Vector3 calculate_velocity(Satellite *sat, double current_unix);
 Vector3 calculate_moon_position(double current_time_days);
+
+/* geocentric lunar orbit sampling (one sidereal month) */
+#define MOON_ORBIT_SAMPLES 256
+#define MOON_SIDEREAL_PERIOD_DAYS 27.321661
+void calculate_moon_orbit(double current_epoch, Vector3 *out_km, int count);
 void get_apsis_2d(Satellite *sat, double current_time, bool is_apoapsis, double gmst_deg, float earth_offset,
                   float map_w, float map_h, Vector2 *out);
 void get_apsis_times(Satellite *sat, double current_time, double *out_peri_unix, double *out_apo_unix);
@@ -81,6 +89,14 @@ void geodetic_to_ecef(double lat_deg, double lon_deg, double alt_m, double *ox, 
 void get_az_el(Vector3 eci_pos, double gmst_deg, float obs_lat, float obs_lon, float obs_alt, double *az, double *el);
 void CalculatePasses(Satellite *sat, double start_epoch);
 void CalculatePassesFavorites(Satellite *selected, double start_epoch);
+
+/* recompute passes only when the cache key changes; returns true if recomputed */
+bool EnsurePassesUpToDate(unsigned int mode, Satellite *selected,
+                          double start_epoch, bool force = false);
+
+void GetFullPassWindow(Satellite *sat, double aos_epoch, double los_epoch,
+                       double *out_aos, double *out_los);
+
 void epoch_to_time_str(double epoch, char *str);
 
 // local-time display preference (backend is UTC)
@@ -91,6 +107,10 @@ double local_fields_to_epoch(int year, int day, int hour, int min, int sec);
 void update_orbit_cache(Satellite *sat, double current_epoch);
 bool is_orbit_cache_valid(Satellite *sat, Vector3 current_pos, float drift_threshold_km);
 int calculate_orbit_cache_resolution(double eccentricity);
+
+/* fills out_times[0..n-1] with adaptive sample epochs (days), uniform in eccentric anomaly */
+void orbit_adaptive_sample_times(const Satellite *sat, double start_epoch, int n,
+                                 double span_orbits, double *out_times);
 
 double get_sat_range(Satellite *sat, double epoch, Location obs);
 double calculate_doppler_freq(Satellite *sat, double epoch, Location obs, double base_freq);

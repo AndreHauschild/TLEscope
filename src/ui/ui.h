@@ -13,13 +13,7 @@ typedef enum
     LOCK_SAT
 } TargetLock;
 
-/**
- * @brief encapsulates all UI-only state
- *
- * Holds window positions, dialog visibility flags, text buffers,
- * and other UI-specific state. Formalizing this struct makes the
- * separation between core simulation state and UI state explicit.
- */
+// UI-only state: window positions, dialog flags, text buffers
 typedef struct
 {
     /* dialog visibility flags */
@@ -27,13 +21,11 @@ typedef struct
     bool show_settings;
     bool show_passes_dialog;
     bool show_polar_dialog;
-    bool show_doppler_dialog;
     bool show_tle_warning;
     bool show_exit_dialog;
     bool show_sat_mgr_dialog;
     bool show_tle_mgr_dialog;
     bool show_time_dialog;
-    bool show_scope_dialog;
     bool show_sat_info_dialog;
     bool show_log_window;
 
@@ -93,12 +85,6 @@ typedef struct
     char text_hl_lon[32];
     char text_hl_alt[32];
     char text_unix[64];
-    char text_doppler_freq[32];
-    char text_doppler_res[32];
-    char text_doppler_file[128];
-    char text_scope_az[16];
-    char text_scope_el[16];
-    char text_scope_beam[16];
 
     /* edit mode flags */
     bool edit_sat_search;
@@ -109,8 +95,6 @@ typedef struct
     bool edit_year, edit_month, edit_day;
     bool edit_hour, edit_min, edit_sec;
     bool edit_unix;
-    bool edit_doppler_freq, edit_doppler_res, edit_doppler_file;
-    bool edit_scope_az, edit_scope_el, edit_scope_beam;
     bool rot_edit_host, rot_edit_port;
     bool rot_edit_get_fmt, rot_edit_set_fmt;
     bool rot_edit_custom_cmd;
@@ -121,16 +105,6 @@ typedef struct
     /* RA/Dec display format state */
     int ra_format;      /* 0 = decimal degrees (default), 1 = hours:minutes:seconds */
     int dec_format;     /* 0 = decimal degrees (default), 1 = degrees:arcminutes:arcseconds */
-
-    /* scope state */
-    bool scope_drag_active;
-    Vector2 scope_drag_last;
-    bool scope_drag_moved;
-    bool scope_lock;
-    bool scope_show_leo;
-    bool scope_show_heo;
-    bool scope_show_geo;
-    bool scope_show_trails;
 
     /* polar state */
     bool polar_lunar_mode;
@@ -165,6 +139,10 @@ typedef struct
     double locked_pass_aos;
     double locked_pass_los;
 
+    /* transit tracking panel state */
+    bool transit_overview_open;   /* "Transit Overview" modal visibility */
+    int transit_plot_tab;         /* last active modal plot tab (0..2)   */
+
     /* misc UI state */
     bool ui_initialized;
     int last_drawable_height;
@@ -188,16 +166,14 @@ typedef struct
     bool *is_auto_warping;
     double *auto_warp_target;
     double *auto_warp_initial_diff;
+    // sim clock slaved to the wall clock; false after a manual date jump so the live lock doesn't snap back to "now"
+    bool *live_follow;
     bool *is_2d_view;
     bool *hide_unselected;
     bool *picking_home;
     bool *exit_app;
     bool *is_ecliptic_frame;
     bool *is_pov_mode;
-    bool *show_scope;
-    float *scope_az;
-    float *scope_el;
-    float *scope_beam;
     Satellite **selected_sat;
     Satellite *hovered_sat;
     Satellite *active_sat;
@@ -227,10 +203,15 @@ void UIOpenHelp(void);
 void UIOpenAbout(void);
 void UIRequestExit(void);
 
+bool UIModalAnyOpen(void);
+void UICloseTopModal(AppConfig *cfg);
+
 /* shared helpers */
 Color ApplyAlpha(Color c, float alpha);
 void DrawUIText(Font font, const char *text, float x, float y, float size, Color color);
+double ClampTimeMultiplier(double v);
 double StepTimeMultiplier(double current, bool increase);
 bool IsOccludedByEarth(Vector3 camPos, Vector3 targetPos, float earthRadius);
+bool IsOrbitSegmentOccluded(Vector3 camPos, Vector3 a, Vector3 b, float earthRadius);
 
 #endif // UI_H

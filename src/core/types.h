@@ -12,18 +12,7 @@
  * to avoid symbol conflicts.
  */
 
-/*
- * On Windows, ensure windows.h is included BEFORE raylib.h to prevent
- * symbol conflicts between the Windows API and raylib.
- *
- * Conflicts handled:
- *   - Rectangle  (raylib struct vs wingdi.h function)           -> NOGDI
- *   - CloseWindow(raylib void(void) vs winuser.h BOOL(HWND))    -> rename macro
- *   - ShowCursor (raylib void(void) vs winuser.h int(BOOL))     -> rename macro
- *   - LoadImage  (raylib function vs winuser.h macro->LoadImageA)-> undef macro
- *   - DrawText   (raylib function vs winuser.h macro->DrawTextA) -> undef macro
- *   - DrawTextEx (raylib function vs winuser.h macro->DrawTextExA)-> undef macro
- */
+// include windows.h before raylib.h to avoid symbol conflicts (Rectangle, CloseWindow, ShowCursor, LoadImage, DrawText, DrawTextEx)
 #ifdef _WIN32
     #ifndef WIN32_LEAN_AND_MEAN
         #define WIN32_LEAN_AND_MEAN
@@ -76,12 +65,24 @@
 #include <time.h>
 
 // basic limits and math constants
-#define MAX_SATELLITES 15000
+
+// compile-time fixed-array capacity; runtime limit is GetMaxSatellites()
+#define MAX_SATELLITES_HARD_CAP 100000
+#define DEFAULT_MAX_SATELLITES  50000
+#define MIN_MAX_SATELLITES      1000
+#define MAX_MAX_SATELLITES      MAX_SATELLITES_HARD_CAP
+
 #define MAX_LOCATIONS 256
 #define EARTH_RADIUS_KM 6371.0f
 #define MOON_RADIUS_KM 1737.4f
 #define MU 398600.4418f
 #define DRAW_SCALE 3000.0f
+
+/* symmetric timewarp magnitude limit: 524288 == 2^19 */
+#define MAX_TIME_MULTIPLIER 524288.0
+
+// max wall-clock drift (s) for the sim to count as "live"; shared by the main-loop time lock and the live badge
+#define LIVE_WINDOW_SEC 5.0
 
 #define ORBIT_CACHE_SIZE 361
 #define MAX_CUSTOM_DATA_SOURCES 20
@@ -94,24 +95,19 @@
 
 /* -- Panel identity -------------------------------------------------------- */
 
-/**
- * Numeric identity of every tool panel. The sentinel PANEL_COUNT is the number
- * of panels and is used to size the layout arrays, so adding a panel here
- * automatically grows MAX_PANELS — no manual capacity bump required.
- */
+// numeric identity of every tool panel; PANEL_COUNT sizes the layout arrays
 typedef enum
 {
     PANEL_SAT_MGR = 0,      /* Satellite Manager            -> left  */
     PANEL_DATA_SOURCES,     /* Data Sources                 -> left  */
     PANEL_LAYERS,           /* Layer Controls               -> left  */
-    PANEL_SCOPE,            /* Scope                        -> left  */
     PANEL_ROTATOR,          /* Rotator Control              -> left  */
     PANEL_SAT_INFO,         /* Satellite Info (inspector)   -> right */
-    PANEL_PASSES,           /* Satellite Passes             -> right */
+    PANEL_TRANSIT,          /* Transit Tracking             -> right */
     PANEL_POLAR_PLOT,       /* Polar Plot                   -> right */
-    PANEL_DOPPLER,          /* Doppler Analysis             -> right */
     PANEL_LOG,              /* Log                          -> right */
     PANEL_TRXDB,            /* TRXDB NORAD TEST             -> right */
+    PANEL_EXAMPLE,          /* Example Tool                 -> right */    
     PANEL_CUBEIFIER,
     PANEL_COUNT
 } PanelId;
@@ -182,6 +178,7 @@ typedef struct
 
     Vector3 orbit_cache[ORBIT_CACHE_SIZE];
     int orbit_cache_resolution;  // how many points are valid
+    float orbit_cache_phase[ORBIT_CACHE_SIZE];  // per-sample orbit phase (fraction of a period from the cache start)
     Vector3 cached_orbit_base_pos;  // position when cache was last calculated
     double cached_orbit_epoch;  // epoch when cache was last calculated
     bool orbit_cached;
@@ -245,13 +242,7 @@ typedef struct {
 
 #define MAX_DATA_SOURCE_SELECTIONS 64
 
-/**
- * @brief persisted UI layout state (sidebar geometry, panel order, open state)
- *
- * Mirrors the runtime UILayoutState from ui_layout.h so layout can be
- * serialised to settings.json without the UI layer being required at
- * config-parse time.
- */
+// persisted UI layout state; mirrors UILayoutState so it can be saved without the UI layer
 typedef struct {
     /* sidebar geometry */
     float left_sidebar_width;
@@ -275,7 +266,7 @@ typedef struct {
     bool panel_enabled[MAX_PANELS];
 } UILayoutPersist;
 
-extern Satellite satellites[MAX_SATELLITES];
+extern Satellite satellites[MAX_SATELLITES_HARD_CAP];
 extern int sat_count;
 
 extern Location locations[MAX_LOCATIONS];
@@ -284,6 +275,7 @@ extern int location_count;
 #define MAX_MANUAL_ENTRIES 20
 
 // data staleness threshold presets (in seconds)
+#define STALE_THRESHOLD_NEVER   0       // disable all staleness checks/prompts
 #define STALE_THRESHOLD_6H      21600
 #define STALE_THRESHOLD_12H     43200
 #define STALE_THRESHOLD_1D      86400
@@ -319,11 +311,7 @@ typedef struct
     char value[256];
 } ToolSetting;
 
-/**
- * Generic persisted key-value map owned by tools. Tools read/write their own
- * namespaced keys (e.g. "cubeifier.enabled") via tools_settings.h, so adding a
- * toggle never requires a new AppConfig field or a config.cpp edit.
- */
+// generic persisted key-value map owned by tools (see tools_settings.h)
 typedef struct
 {
     ToolSetting entries[MAX_TOOL_SETTINGS];
@@ -336,6 +324,10 @@ typedef struct
     char theme[64];
     int window_width;
     int window_height;
+    int window_x;          // restored (un-maximized) window X position, monitor coords
+    int window_y;          // restored (un-maximized) window Y position, monitor coords
+    bool window_maximized; // last session maximized state (default true: open maximized)
+    bool has_window_placement; // true once a valid restored rect has been stored
     bool fullscreen;       // start in fullscreen mode (default false)
     int target_fps;
     float ui_scale;
@@ -352,13 +344,16 @@ typedef struct
     bool show_scattering;
     bool hint_vsync;
     bool show_skybox;
+    bool show_sun;
+    bool show_sun_flare;
+    bool show_ecliptic_frame;
     bool show_ground_coverage;
     bool show_apsides;
     bool show_earth_texture;
     bool show_latlon_grid;
     bool show_country_borders;
     bool show_coast_lines;
-    bool show_first_run_dialog;
+    bool show_tutorial;   /* first-boot tutorial pending (default false) */
     bool reload_theme;
     bool use_local_time;   // display dates/times in the system local timezone (default true)
     bool night_mode;       // full-screen monochrome-red post-process for dark adaptation
@@ -369,7 +364,7 @@ typedef struct
     RotatorSettings rotator_settings;  // persisted rotator connection config
 
     /* persisted active satellite selection (NORAD ids) */
-    uint32_t active_sat_ids[MAX_SATELLITES];
+    uint32_t active_sat_ids[MAX_SATELLITES_HARD_CAP];
     int active_sat_count;
     bool has_saved_selection;  // true once a selection has been persisted
 
@@ -387,7 +382,9 @@ typedef struct
     int custom_entry_count;
 
     int data_stale_threshold_seconds;  // default: STALE_THRESHOLD_DEFAULT (2 days)
+    bool auto_repull_stale;            // auto re-pull stale data instead of prompting (default false)
     int network_timeout_seconds;       // HTTP request timeout, 15-300 seconds (default 45)
+    int max_satellites;                // runtime limit, MIN_MAX_SATELLITES..MAX_MAX_SATELLITES
 
     UILayoutPersist ui_layout;  // sidebar/panel layout persistence
 

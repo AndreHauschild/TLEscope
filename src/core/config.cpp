@@ -1,9 +1,12 @@
 #include "config.h"
 #include "types.h"
+#include "astro.h"
 #include "theme.h"
 #include "location.h"
 #include "util/log.h"
 #include "ui/tools/tools_settings.h"
+#include "ui/tools/tools_common.h" /* ApplyLayerPreset (first-boot defaults) */
+#include "ui/tools/tools_registry.h"
 #include "data/curl_diagnostics.h"
 
 #include <nlohmann/json.hpp>
@@ -30,15 +33,18 @@ void LoadAppConfig(const char *filename, AppConfig *config)
     config->limit_map_zoomout = true;  // default: cap 2D map zoom-out at the viewport fill level
     config->highlight_sunlit = false; // default
     config->show_slant_range = false; // default
-    config->show_scattering = false;  // default
+    config->show_scattering = true;   // default (Aesthetic profile)
     config->show_skybox = true;       // default
+    config->show_sun = true;          // default
+    config->show_sun_flare = true;    // default
+    config->show_ecliptic_frame = false; // default
     config->show_ground_coverage = true; // default
     config->show_apsides = true;      // default
     config->show_earth_texture = true;  // default
     config->show_latlon_grid = true;    // default
     config->show_country_borders = true;  // default
     config->show_coast_lines = true;   // default
-    config->show_first_run_dialog = false; // default
+    config->show_tutorial = false;   // default: first-boot tutorial not pending
     config->hint_vsync = true;       // default
     config->use_local_time = true;   // default: display in system local timezone
     config->night_mode = false;      // default: full-screen red post-process off
@@ -48,7 +54,9 @@ void LoadAppConfig(const char *filename, AppConfig *config)
     config->retlector_groups_fetched = false;
     config->custom_entry_count = 0;
     config->data_stale_threshold_seconds = STALE_THRESHOLD_DEFAULT;
+    config->auto_repull_stale = false;
     config->network_timeout_seconds = 45;
+    config->max_satellites = DEFAULT_MAX_SATELLITES;
     config->prop_use_short_period = true;
     config->active_sat_count = 0;
     config->has_saved_selection = false;
@@ -81,35 +89,33 @@ void LoadAppConfig(const char *filename, AppConfig *config)
         L->left_restore_width = 300.0f;
         L->right_restore_width = 300.0f;
 
-        // left sidebar: core functions
-        int left_defaults[MAX_PANELS] = {0, 1, 2, 3, 4, -1, -1, -1, -1, -1, -1}; // SAT_MGR, DATA_SOURCES, LAYERS, SCOPE, ROTATOR
-        bool left_open_defaults[MAX_PANELS] = {true, true, true, false, false, false, false, false, false, false, false};
         for (int i = 0; i < MAX_PANELS; i++)
         {
-            L->left_panel_order[i] = left_defaults[i];
-            L->left_panel_open[i] = left_open_defaults[i];
-        }
-
-        // right sidebar: inspector + scientific tools
-        int right_defaults[MAX_PANELS] = {5, 6, 7, 8, 9, 10, -1, -1, -1, -1, -1}; // SAT_INFO, PASSES, POLAR_PLOT, DOPPLER, LOG, TRXDB
-        bool right_open_defaults[MAX_PANELS] = {true, false, false, false, false, false, false, false, false, false, false};
-        for (int i = 0; i < MAX_PANELS; i++)
-        {
-            L->right_panel_order[i] = right_defaults[i];
-            L->right_panel_open[i] = right_open_defaults[i];
-        }
-
-        // all panels disabled by default (Tools dropdown); only the
-        // essential core/inspector tools are turned on for first run.
-        // New tools added to the enum stay off automatically.
-        for (int i = 0; i < MAX_PANELS; i++)
+            L->left_panel_order[i] = -1;
+            L->right_panel_order[i] = -1;
+            L->left_panel_open[i] = false;
+            L->right_panel_open[i] = false;
             L->panel_enabled[i] = false;
-        L->panel_enabled[PANEL_SAT_MGR]      = true;
-        L->panel_enabled[PANEL_DATA_SOURCES] = true;
-        L->panel_enabled[PANEL_LAYERS]       = true;
-        L->panel_enabled[PANEL_SAT_INFO]     = true;
-        L->panel_enabled[PANEL_PASSES]       = true;
-        L->panel_enabled[PANEL_POLAR_PLOT]   = true;
+        }
+
+        int li = 0, ri = 0;
+        for (int i = 0; i < PANEL_COUNT; i++)
+        {
+            const PanelDef *def = &g_panel_defs[i];
+            if (def->default_side == SIDEBAR_LEFT)
+            {
+                L->left_panel_order[li] = def->id;
+                L->left_panel_open[li] = def->default_open;
+                li++;
+            }
+            else
+            {
+                L->right_panel_order[ri] = def->id;
+                L->right_panel_open[ri] = def->default_open;
+                ri++;
+            }
+            L->panel_enabled[def->id] = def->default_enabled;
+        }
     }
 
     if (FileExists(filename))
@@ -162,15 +168,23 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                     get_str("theme", "default", config->theme, sizeof(config->theme));
                     config->window_width = get_int("window_width", config->window_width);
                     config->window_height = get_int("window_height", config->window_height);
+                    config->window_x = get_int("window_x", config->window_x);
+                    config->window_y = get_int("window_y", config->window_y);
+                    config->window_maximized = get_bool("window_maximized", config->window_maximized);
+                    config->has_window_placement = get_bool("has_window_placement", config->has_window_placement);
                     config->fullscreen = get_bool("fullscreen", config->fullscreen);
                     config->target_fps = get_int("target_fps", config->target_fps);
                     config->ui_scale = get_float("ui_scale", config->ui_scale);
                     config->earth_rotation_offset = get_float("earth_rotation_offset", config->earth_rotation_offset);
                     config->orbits_to_draw = get_float("orbits_to_draw", config->orbits_to_draw);
                     config->data_stale_threshold_seconds = get_int("data_stale_threshold_seconds", config->data_stale_threshold_seconds);
+                    config->auto_repull_stale = get_bool("auto_repull_stale", config->auto_repull_stale);
                     config->network_timeout_seconds = get_int("network_timeout_seconds", config->network_timeout_seconds);
                     if (config->network_timeout_seconds < 15) config->network_timeout_seconds = 15;
                     if (config->network_timeout_seconds > 300) config->network_timeout_seconds = 300;
+                    config->max_satellites = get_int("max_satellites", config->max_satellites);
+                    if (config->max_satellites < MIN_MAX_SATELLITES) config->max_satellites = MIN_MAX_SATELLITES;
+                    if (config->max_satellites > MAX_MAX_SATELLITES) config->max_satellites = MAX_MAX_SATELLITES;
                     config->first_day_of_week = get_int("first_day_of_week", config->first_day_of_week);
                     config->prop_use_short_period = get_bool("prop_use_short_period", config->prop_use_short_period);
 
@@ -182,6 +196,9 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                     config->highlight_sunlit = get_bool("highlight_sunlit", config->highlight_sunlit);
                     config->show_slant_range = get_bool("show_slant_range", config->show_slant_range);
                     config->show_skybox = get_bool("show_skybox", config->show_skybox);
+                    config->show_sun = get_bool("show_sun", config->show_sun);
+                    config->show_sun_flare = get_bool("show_sun_flare", config->show_sun_flare);
+                    config->show_ecliptic_frame = get_bool("show_ecliptic_frame", config->show_ecliptic_frame);
                     config->show_ground_coverage = get_bool("show_ground_coverage", config->show_ground_coverage);
                     config->show_apsides = get_bool("show_apsides", config->show_apsides);
                     config->show_earth_texture = get_bool("show_earth_texture", config->show_earth_texture);
@@ -190,7 +207,7 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                     config->show_coast_lines = get_bool("show_coast_lines", config->show_coast_lines);
                     config->show_scattering = get_bool("show_scattering", config->show_scattering);
                     config->hint_vsync = get_bool("hint_vsync", config->hint_vsync);
-                    config->show_first_run_dialog = get_bool("show_first_run_dialog", config->show_first_run_dialog);
+                    config->show_tutorial = get_bool("show_tutorial", config->show_tutorial);
                     config->use_local_time = get_bool("use_local_time", config->use_local_time);
                     config->night_mode = get_bool("night_mode", config->night_mode);
 
@@ -442,13 +459,7 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                             L->left_restore_width = get_val("left_restore_width", L->left_restore_width);
                             L->right_restore_width = get_val("right_restore_width", L->right_restore_width);
 
-                            /* One-time migration: older settings.json stored the
-                             * sidebar widths in absolute (already ui_scale-scaled)
-                             * pixels. The layout now stores them in base units and
-                             * multiplies by ui_scale at use, so divide the stored
-                             * values by the current ui_scale to preserve the
-                             * on-screen width. The "widths_logical" marker records
-                             * that the file has already been migrated. */
+                            // one-time migration: older settings stored absolute (ui_scale-scaled) widths; divide by ui_scale
                             bool widths_logical = false;
                             auto wl = ul->find("widths_logical");
                             if (wl != ul->end() && wl->is_boolean())
@@ -509,6 +520,14 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                                 auto v = o.find("value");
                                 if (k == o.end() || v == o.end())
                                     continue;
+                                // drop settings owned by the removed Scope/Doppler panels
+                                if (k->is_string())
+                                {
+                                    const std::string &key = k->get<std::string>();
+                                    if (key.rfind("scope.", 0) == 0 ||
+                                        key.rfind("doppler.", 0) == 0)
+                                        continue;
+                                }
                                 if (k->is_string())
                                     copy_str(s->key, sizeof(s->key), k->get<std::string>());
                                 if (v->is_string())
@@ -553,7 +572,7 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                         if (as != root.end() && as->is_array())
                         {
                             config->has_saved_selection = true;
-                            for (size_t i = 0; i < as->size() && config->active_sat_count < MAX_SATELLITES; i++)
+                            for (size_t i = 0; i < as->size() && config->active_sat_count < config->max_satellites; i++)
                             {
                                 if (as->at(i).is_number_unsigned())
                                     config->active_sat_ids[config->active_sat_count++] = (uint32_t)as->at(i).get<uint64_t>();
@@ -583,23 +602,11 @@ void LoadAppConfig(const char *filename, AppConfig *config)
         config->ui_scale = 1.15;
         config->earth_rotation_offset = 0.00;
         config->orbits_to_draw = 3.00;
-        config->show_clouds = true;
-        config->show_night_lights = true;
-        config->show_markers = true;
         config->show_statistics = false;
         config->limit_map_zoomout = true;
-        config->highlight_sunlit = false;
-        config->show_slant_range = false;
-        config->show_scattering = false;
-        config->show_skybox = true;
-        config->show_ground_coverage = true;
-        config->show_apsides = true;
-        config->show_earth_texture = true;
-        config->show_latlon_grid = true;
-        config->show_country_borders = true;
-        config->show_coast_lines = true;
         config->hint_vsync = true;
         config->night_mode = false;
+        config->max_satellites = DEFAULT_MAX_SATELLITES;
         config->prop_use_short_period = true;
         // first run: a single default home location, no forced example marker
         location_count = 0;
@@ -607,7 +614,10 @@ void LoadAppConfig(const char *filename, AppConfig *config)
         if (home_idx >= 0)
             SetHomeLocation(home_idx);
 
-        config->show_first_run_dialog = true;
+        /* first boot only: default layer state = the Visual preset */
+        ApplyLayerPreset(config, LAYER_PRESET_VISUAL);
+
+        config->show_tutorial = true;
 
         SaveAppConfig(filename, config);
     }
@@ -615,6 +625,9 @@ void LoadAppConfig(const char *filename, AppConfig *config)
     /* persist the one-time width-unit migration so it never runs twice */
     if (layout_migrated)
         SaveAppConfig(filename, config);
+
+    /* apply the persisted runtime satellite limit before any data loading */
+    SetMaxSatellites(config->max_satellites);
 
     TLEscopeSetCurlTimeoutSeconds(config->network_timeout_seconds);
 
@@ -633,6 +646,10 @@ void SaveAppConfig(const char *filename, AppConfig *config)
     root["theme"] = config->theme;
     root["window_width"] = config->window_width;
     root["window_height"] = config->window_height;
+    root["window_x"] = config->window_x;
+    root["window_y"] = config->window_y;
+    root["window_maximized"] = config->window_maximized;
+    root["has_window_placement"] = config->has_window_placement;
     root["fullscreen"] = config->fullscreen;
     root["target_fps"] = config->target_fps;
     root["ui_scale"] = config->ui_scale;
@@ -647,6 +664,9 @@ void SaveAppConfig(const char *filename, AppConfig *config)
     root["show_slant_range"] = config->show_slant_range;
     root["show_scattering"] = config->show_scattering;
     root["show_skybox"] = config->show_skybox;
+    root["show_sun"] = config->show_sun;
+    root["show_sun_flare"] = config->show_sun_flare;
+    root["show_ecliptic_frame"] = config->show_ecliptic_frame;
     root["show_ground_coverage"] = config->show_ground_coverage;
     root["show_apsides"] = config->show_apsides;
     root["show_earth_texture"] = config->show_earth_texture;
@@ -654,12 +674,14 @@ void SaveAppConfig(const char *filename, AppConfig *config)
     root["show_country_borders"] = config->show_country_borders;
     root["show_coast_lines"] = config->show_coast_lines;
     root["hint_vsync"] = config->hint_vsync;
-    root["show_first_run_dialog"] = config->show_first_run_dialog;
+    root["show_tutorial"] = config->show_tutorial;
     root["use_local_time"] = config->use_local_time;
     root["night_mode"] = config->night_mode;
     root["first_day_of_week"] = config->first_day_of_week;
     root["data_stale_threshold_seconds"] = config->data_stale_threshold_seconds;
+    root["auto_repull_stale"] = config->auto_repull_stale;
     root["network_timeout_seconds"] = config->network_timeout_seconds;
+    root["max_satellites"] = config->max_satellites;
     root["prop_use_short_period"] = config->prop_use_short_period;
 
     if (config->custom_data_source_count > 0)
