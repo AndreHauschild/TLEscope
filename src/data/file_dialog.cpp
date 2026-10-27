@@ -361,12 +361,16 @@ bool FileDialog::matchesFilter(const fs::path& path) const
 
 bool FileDialog::isHidden(const fs::path& path)
 {
+    // All platforms: names starting with a dot are hidden
+    const std::string name = path.filename().string();
+    if (name.size() > 1 && name[0] == '.')
+        return true;
+
 #ifdef _WIN32
+    // Windows: additionally honor the hidden file attribute
     const DWORD attrs = GetFileAttributesW(path.c_str());
     return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_HIDDEN);
 #else
-    // Linux and macOS: dot-files are hidden
-    const std::string name = path.filename().string();
-    return name.size() > 1 && name[0] == '.';
+    return false;
 #endif
 }
