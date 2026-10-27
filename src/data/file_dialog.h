@@ -13,14 +13,13 @@
 #include <string>
 #include <vector>
 
-static std::string getHomeDirectory();
-
+namespace fs = std::filesystem;
 
 class FileDialog
 {
     public:
 
-        FileDialog(std::string filterText="*");
+        FileDialog(std::string filterText = "*");
 
         void open(const std::string& initialPath = "");
 
@@ -47,17 +46,19 @@ class FileDialog
 
     private:
 
-        void setDirectory(const std::filesystem::path& path);
-        void parseFilter();
-        bool matchesFilter(const std::filesystem::path& path) const;
+        void setDirectory(const fs::path& path);
+        std::string getHomeDirectory() const;
 
-        static bool isHidden(const std::filesystem::path& path);
+        void parseFilter();
+        bool matchesFilter(const fs::path& path) const;
+
+        bool isHidden(const fs::path& path);
 
         bool showHidden_ = false;   // default: hidden files are not shown
         bool open_ = false;
 
-        std::filesystem::path currentDirectory_;
-        std::filesystem::path lastSelectedDirectory_;
+        fs::path currentDirectory_;
+        fs::path lastSelectedDirectory_;
 
         std::string fileName_;
         std::string fileNameSelected_;
