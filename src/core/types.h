@@ -108,7 +108,7 @@ typedef enum
     PANEL_LOG,              /* Log                          -> right */
     PANEL_TRXDB,            /* TRXDB NORAD TEST             -> right */
     PANEL_EXAMPLE,          /* Example Tool                 -> right */
-    PANEL_ISL,              /* ISL                          -> left */
+    PANEL_ISL,              /* ISL                          -> right */
     PANEL_COUNT
 } PanelId;
 
