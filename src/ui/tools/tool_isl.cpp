@@ -46,27 +46,27 @@ struct LinkEpoch
 
 class LinkSchedule
 {
-  public:
+    public:
 
-    /* Load link schedule file. Returns false on error; the schedule is
-     * empty in that case. */
-    bool read(const std::string &filename);
+        /* Load link schedule file. Returns false on error; the schedule is
+         * empty in that case. */
+        bool read(const std::string &filename);
 
-    /* Find the links for the given epoch using binary search.
-     * Returns nullptr if the epoch is outside the schedule. */
-    const LinkEpoch *find(double epoch) const;
+        /* Find the links for the given epoch using binary search.
+         * Returns nullptr if the epoch is outside the schedule. */
+        const LinkEpoch *find(double epoch) const;
 
-    void clear() { epochs_.clear(); }
-    bool empty() const { return epochs_.empty(); }
-    std::size_t size() const { return epochs_.size(); }
+        void clear() { epochs_.clear(); }
+        bool empty() const { return epochs_.empty(); }
+        std::size_t size() const { return epochs_.size(); }
 
-    /* First/last epoch in the schedule (only valid if !empty()) */
-    double firstEpoch() const { return epochs_.front().epoch; }
-    double lastEpoch() const { return epochs_.back().epoch; }
+        /* First/last epoch in the schedule (only valid if !empty()) */
+        double firstEpoch() const { return epochs_.front().epoch; }
+        double lastEpoch() const { return epochs_.back().epoch; }
 
-  private:
+    private:
 
-    std::vector<LinkEpoch> epochs_;
+        std::vector<LinkEpoch> epochs_;
 };
 
 bool LinkSchedule::read(const std::string &filename)
@@ -256,7 +256,7 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     bool showIsl = ToolSettingGetBool(cfg, "isl.enabled", false);
     bool prev = showIsl;
     DrawLayerCheckbox("ISL Range", &showIsl, ICON_FA_ARROW_RIGHT_ARROW_LEFT,
-                      "Show a ISL range connection based on a scheduler file (3D only)");
+            "Show a ISL range connection based on a scheduler file (3D only)");
     if (showIsl!=prev)
         ToolSettingSetBool(cfg, "isl.enabled", showIsl);
 
@@ -289,10 +289,13 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
             ToolSettingSetString(cfg, "isl.schedulerFile", file_dialog_isl.fileName().c_str());
         }
     }
+    ImGui::Separator();
 
     /*
      * Time control
      */
+
+    ImGui::Text("Time Controls");
 
     if (ImGui::Button(ICON_FA_CIRCLE_ARROW_LEFT "##jump_first_epoch",ImVec2(icon_w, icon_w)))
     {
@@ -303,6 +306,7 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
         ImGui::SetTooltip("Jump to first scheduler epoch");
     ImGui::SameLine();
 
+    ImGui::SetNextItemWidth(avail_w - 2*icon_w - ImGui::GetStyle().ItemSpacing.x);
     if (schedule.empty()) {
         ImGui::BeginDisabled();
         double zero = 0.0, lo = 0.0, hi = 1.0;
@@ -333,6 +337,7 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Jump to last scheduler epoch");
+    ImGui::Separator();
 
 }
 
@@ -340,8 +345,6 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
 
 void DrawSceneIsl(SceneContext *sctx, AppConfig *cfg)
 {
-
-    LOG_INFO("Current epoch %15.6f",sctx->current_epoch);
 
     if (ToolSettingGetBool(cfg, "isl.enabled", false))
     {
@@ -361,8 +364,8 @@ void DrawSceneIsl(SceneContext *sctx, AppConfig *cfg)
 
                     /* Show only links from selected satellite */
                     if(sctx->selected_sat && \
-                            (isls->links[i].norad1 != sctx->selected_sat->norad_id_num && \
-                                    isls->links[i].norad2 != sctx->selected_sat->norad_id_num))
+                       (isls->links[i].norad1 != sctx->selected_sat->norad_id_num && \
+                        isls->links[i].norad2 != sctx->selected_sat->norad_id_num))
                         continue;
 
                     if (isls->links[i].norad1 == satellites[j].norad_id_num)
@@ -389,7 +392,7 @@ void DrawSceneIsl(SceneContext *sctx, AppConfig *cfg)
         for (int i = 0; i < sat_count; i++)
         {
             if (!satellites[i].is_active ||
-                    satellites[i].norad_id_num==sctx->active_sat->norad_id_num)
+                 satellites[i].norad_id_num==sctx->active_sat->norad_id_num)
                 continue;
 
             /* Earth masking */
@@ -417,4 +420,3 @@ void DrawSceneIsl(SceneContext *sctx, AppConfig *cfg)
 #endif
 
 }
-
