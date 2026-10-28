@@ -301,13 +301,23 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
      * ISL scheduler file selection
      */
 
+    /* ISL schedule filename */
+
+    static char islFileName[512] = ""; /* static preserves last value */
+
     ImGui::Separator();
     ImGui::TextColored(ThemeColor(g_theme.ui.accent), "%s Scheduler File",
                        ICON_FA_LIST);
 
-    static char s_file_buf[512] = "";
-    ImGui::SetNextItemWidth(avail_w - icon_w - ImGui::GetStyle().ItemSpacing.x);
-    ImGui::InputText("##scheduler_file", s_file_buf, sizeof(s_file_buf));
+    const float wrap_w = avail_w - icon_w - ImGui::GetStyle().ItemSpacing.x;
+
+    ImGui::BeginChild("##file_name", ImVec2(wrap_w, 0),
+                      ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_NoScrollbar);
+    ImGui::PushTextWrapPos(0.0f);   /* 0 = wrap at the child's right edge */
+    ImGui::TextColored(ThemeColor(g_theme.ui.text_dim), "%s",
+                       islFileName[0] ? islFileName : "no file loaded");
+    ImGui::PopTextWrapPos();
+    ImGui::EndChild();
 
     ImGui::SameLine();
     if (ImGui::Button(ICON_FA_FOLDER "##select_scheduler_file",ImVec2(icon_w, icon_w)))
@@ -317,7 +327,7 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     if (file_dialog_isl.isOpen() && file_dialog_isl.draw())
     {
         /* update string for text field */
-        std::snprintf(s_file_buf, sizeof(s_file_buf), "%s", file_dialog_isl.fileName().c_str());
+        std::snprintf(islFileName, sizeof(islFileName), "%s", file_dialog_isl.fileName().c_str());
 
         /* load scheduler data and jump to first epoch */
         if (schedule.read(file_dialog_isl.fileName()) && !schedule.empty())
