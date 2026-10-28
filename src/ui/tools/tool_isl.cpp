@@ -356,11 +356,16 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     ImGui::BeginDisabled(schedule.empty());
     if (ImGui::Button(ICON_FA_CIRCLE_ARROW_LEFT "##step_back",ImVec2(icon_w, icon_w)))
     {
+        /* Min, max and current epochs */
+        const double e_min = schedule.firstEpoch();
+        const double e_max = schedule.lastEpoch();
+        const double e     = *ctx->current_epoch;
+
         /* Current step size */
         const double step = getStepSize(cfg);
 
         *ctx->time_multiplier = 0.0;
-        *ctx->current_epoch = std::max(schedule.firstEpoch(), *ctx->current_epoch - step);
+        *ctx->current_epoch = std::clamp(e-step, e_min, e_max);
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Move one time step backwards");
@@ -395,6 +400,7 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
                                 &n, &n_min, &n_max, " ", ImGuiSliderFlags_NoInput))
         {
             /* Clamp so the last step lands exactly on last epoch */
+            *ctx->time_multiplier = 0.0;
             *ctx->current_epoch = std::min(e_min + (double)n * step, e_max);
         }
         if (ImGui::IsItemHovered())
@@ -405,11 +411,16 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     ImGui::BeginDisabled(schedule.empty());
     if (ImGui::Button(ICON_FA_CIRCLE_ARROW_RIGHT "##jump_last_epoch",ImVec2(icon_w, icon_w)))
     {
+        /* Min, max and current epochs */
+        const double e_min = schedule.firstEpoch();
+        const double e_max = schedule.lastEpoch();
+        const double e     = *ctx->current_epoch;
+
         /* Current step size */
         const double step = getStepSize(cfg);
 
         *ctx->time_multiplier = 0.0;
-        *ctx->current_epoch = std::min(schedule.lastEpoch(), *ctx->current_epoch + step);
+        *ctx->current_epoch = std::clamp(e+step, e_min, e_max);
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Jump to last scheduler epoch");
