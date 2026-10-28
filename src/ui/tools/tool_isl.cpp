@@ -127,17 +127,17 @@ bool LinkSchedule::read(const std::string &filename)
 
 const LinkEpoch *LinkSchedule::find(double epoch) const
 {
-    /* Empty schedule or epoch outside the covered range */
     if (epochs_.empty() || epoch < epochs_.front().epoch || epoch > epochs_.back().epoch)
         return nullptr;
 
-    /* std::lower_bound performs a binary search. It returns the first
-     * element whose epoch is >= the requested epoch. Because of the range
-     * check above, the result is always a valid element. */
-    auto it = std::lower_bound(epochs_.begin(), epochs_.end(), epoch,
-            [](const LinkEpoch &entry, double e) { return entry.epoch < e; });
+    /* Tolerance (days) absorbs floating-point noise from the time slider: ~8.6 ms */
+    constexpr double kEpochTol = 1e-7;
 
-    return (it != epochs_.end()) ? &(*it) : nullptr;
+    /* First entry strictly after epoch (+tol); the range check above guarantees epoch >= front. */
+    auto it = std::upper_bound(epochs_.begin(), epochs_.end(), epoch + kEpochTol,
+            [](double e, const LinkEpoch &entry) { return e < entry.epoch; });
+
+    return &*(it - 1);
 }
 
 /* Link schedule object */
@@ -148,6 +148,15 @@ static LinkSchedule schedule;
 
 FileDialog file_dialog_isl = FileDialog(".txt");
 
+/* Time step table: the combo labels and the slider step come from the same
+ * source, so they can't get out of sync. */
+static const char *kTimeStepLabels[] = { "1 sec", "30 sec", "1 min", "5 min", "15 min", "1 hour" };
+static const double kTimeStepSeconds[] = { 1.0, 30.0, 60.0, 300.0, 900.0, 3600.0 };
+static constexpr int kNumTimeSteps = (int)IM_ARRAYSIZE(kTimeStepSeconds);
+
+/* Length of one unit of ctx->current_epoch in seconds.
+ * 86400.0 if the epoch is a JD/MJD (days), 1.0 if it is in seconds. */
+static constexpr double kEpochUnitSeconds = 86400.0;
 
 /* Check for Earth masking
  *
@@ -234,7 +243,12 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     const float icon_w = 24.0f;
     const float avail_w = ImGui::GetContentRegionAvail().x;
 
-    auto DrawLayerCheckbox = [&](const char *label, bool *value, const char *icon, const char *tooltip) {
+    /*
+     * Macros for widgets
+     */
+
+    /* checkbox */
+    auto DrawIslCheckbox = [&](const char *label, bool *value, const char *icon, const char *tooltip) {
         ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(*value ? g_theme.ui.accent : g_theme.ui.text_dim));
         ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
         /* center the icon within a fixed-width cell so all rows align */
@@ -249,20 +263,39 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
             ImGui::SetTooltip("%s", tooltip);
     };
 
+    /* right-aligned combo box, disabled while the master toggle is off */
+    auto DrawIslCombo = [&](const char *combo_id, const char *key, int default_mode,
+                            const char *tooltip, bool enabled) {
+        const float combo_w = 74.0f;
+        ImGui::BeginDisabled(!enabled);
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - combo_w*0.8);
+        ImGui::SetNextItemWidth(combo_w);
+        int mode = ToolSettingGetInt(cfg, key, default_mode);
+        if (ImGui::Combo(combo_id, &mode, kTimeStepLabels, kNumTimeSteps))
+            ToolSettingSetInt(cfg, key, mode);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", tooltip);
+        ImGui::EndDisabled();
+    };
+
     /*
      * Checkbox for ISL connections
      */
 
     bool showIsl = ToolSettingGetBool(cfg, "isl.enabled", false);
     bool prev = showIsl;
-    DrawLayerCheckbox("ISL Range", &showIsl, ICON_FA_ARROW_RIGHT_ARROW_LEFT,
-            "Show a ISL range connection based on a scheduler file (3D only)");
+    DrawIslCheckbox("Show Links", &showIsl, ICON_FA_ARROW_RIGHT_ARROW_LEFT,
+                    "Show a ISL connections based on a scheduler file (3D only)");
     if (showIsl!=prev)
         ToolSettingSetBool(cfg, "isl.enabled", showIsl);
 
     /*
      * ISL scheduler file selection
      */
+
+    ImGui::Separator();
+    ImGui::TextColored(ThemeColor(g_theme.ui.accent), "%s Scheduler File",
+                       ICON_FA_LIST);
 
     static char s_file_buf[512] = "";
     ImGui::SetNextItemWidth(avail_w - icon_w - ImGui::GetStyle().ItemSpacing.x);
@@ -275,8 +308,6 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     }
     if (file_dialog_isl.isOpen() && file_dialog_isl.draw())
     {
-        LOG_INFO("Opening ISL schedule file: %s", file_dialog_isl.fileName().c_str());
-
         /* update string for text field */
         std::snprintf(s_file_buf, sizeof(s_file_buf), "%s", file_dialog_isl.fileName().c_str());
 
@@ -295,8 +326,16 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
      * Time control
      */
 
-    ImGui::Text("Time Controls");
+    ImGui::TextColored(ThemeColor(g_theme.ui.accent), "%s Time Controls",
+                       ICON_FA_USER_CLOCK);
 
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("%s", ctx->datetime_str);
+
+    DrawIslCombo("##time_step", "isl.time_step", 3,
+                 "Select step size for time slider", !schedule.empty());
+
+    ImGui::BeginDisabled(schedule.empty());
     if (ImGui::Button(ICON_FA_CIRCLE_ARROW_LEFT "##jump_first_epoch",ImVec2(icon_w, icon_w)))
     {
         *ctx->time_multiplier = 0.0;
@@ -304,6 +343,7 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Jump to first scheduler epoch");
+    ImGui::EndDisabled();
     ImGui::SameLine();
 
     ImGui::SetNextItemWidth(avail_w - 2*icon_w - ImGui::GetStyle().ItemSpacing.x);
@@ -315,21 +355,33 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     }
     else
     {
-        double v_min = schedule.firstEpoch();
-        double v_max = schedule.lastEpoch();
-        double v = *ctx->current_epoch;
+        const int step_idx = std::clamp(ToolSettingGetInt(cfg, "isl.time_step", 3),
+                                        0, kNumTimeSteps - 1);
+        const double step = kTimeStepSeconds[step_idx] / kEpochUnitSeconds;
 
-        // Degenerate range (single epoch): ImGui's slider math breaks when min == max
-        if (v_min == v_max) v_max = v_min + 1.0;
+        const double v_min = schedule.firstEpoch();
+        const double v_max = schedule.lastEpoch();
+        const double cur   = *ctx->current_epoch;
 
-        if (ImGui::SliderScalar("##time_control", ImGuiDataType_Double, &v, &v_min, &v_max, "%15.5f"))
-            *ctx->current_epoch = v;
+        /* Slider works on an integer step index. The small epsilon avoids an
+         * extra step from floating-point noise; max(1) covers a single-epoch
+         * schedule, so the old min == max workaround is no longer needed. */
+        long long n_min = 0;
+        long long n_max = std::max(1LL, (long long)std::ceil((v_max - v_min) / step - 1e-9));
+        long long n     = std::clamp((long long)std::llround((cur - v_min) / step), n_min, n_max);
 
+        if (ImGui::SliderScalar("##time_control", ImGuiDataType_S64,
+                                &n, &n_min, &n_max, " ", ImGuiSliderFlags_NoInput))
+        {
+            /* Clamp so the last step lands exactly on last epoch */
+            *ctx->current_epoch = std::min(v_min + (double)n * step, v_max);
+        }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Select epoch");
     }
     ImGui::SameLine();
 
+    ImGui::BeginDisabled(schedule.empty());
     if (ImGui::Button(ICON_FA_CIRCLE_ARROW_RIGHT "##jump_last_epoch",ImVec2(icon_w, icon_w)))
     {
         *ctx->time_multiplier = 0.0;
@@ -337,6 +389,7 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Jump to last scheduler epoch");
+    ImGui::EndDisabled();
     ImGui::Separator();
 
 }
