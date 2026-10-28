@@ -28,6 +28,8 @@
 #include "raymath.h"
 #include "rlgl.h"
 
+#define DEBUG 0
+
 /* Data structures */
 
 struct LinkPair
@@ -90,7 +92,7 @@ bool LinkSchedule::read(const std::string &filename)
         entry.epoch = epoch;
         entry.links.reserve(numLinks);
 
-        for (std::size_t i = 0; i < numLinks; ++i)
+        for (unsigned int i = 0; i < numLinks; i++)
         {
             unsigned int norad1;
             unsigned int norad2;
@@ -150,14 +152,19 @@ FileDialog file_dialog_isl = FileDialog(".txt");
 
 /* Time step table: the combo labels and the slider step come from the same
  * source, so they can't get out of sync. */
-static const char *kTimeStepLabels[] = { "1 sec", "30 sec", "1 min", "5 min", "15 min", "1 hour" };
-static const double kTimeStepSeconds[] = { 1.0, 30.0, 60.0, 300.0, 900.0, 3600.0 };
+static const char *kTimeStepLabels[] = { "1 sec", "5 sec", "15 sec", "30 sec", "1 min", "5 min", "15 min", "30 min", "1 hour" };
+static const double kTimeStepSeconds[] = { 1.0, 5.0, 15.0, 30.0, 60.0, 300.0, 900.0, 1800.0, 3600.0 };
 static constexpr int kNumTimeSteps = (int)IM_ARRAYSIZE(kTimeStepSeconds);
 
-/* Length of one unit of ctx->current_epoch in seconds.
- * 86400.0 if the epoch is a JD/MJD (days), 1.0 if it is in seconds. */
-static constexpr double kEpochUnitSeconds = 86400.0;
+/* Get current step size */
+double getStepSize(AppConfig *cfg)
+{
+    const int step_idx = std::clamp(ToolSettingGetInt(cfg, "isl.time_step", 4),
+                                    0, kNumTimeSteps - 1);
+    return kTimeStepSeconds[step_idx] / 86400.0; /* [days] */
+}
 
+#if DEBUG > 0
 /* Check for Earth masking
  *
  * Vector3 sat1   : Position vector satellite 1  [km]
@@ -232,6 +239,7 @@ float angleBetween(const Vector3& a, const Vector3& b)
     Vector3 c = Vector3CrossProduct(a,b);
     return std::atan2(Vector3Length(c), Vector3DotProduct(a,b));  // radians
 }
+#endif
 
 /* Draw the tool panel */
 
@@ -332,49 +340,52 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     ImGui::AlignTextToFramePadding();
     ImGui::Text("%s", ctx->datetime_str);
 
-    DrawIslCombo("##time_step", "isl.time_step", 3,
+    DrawIslCombo("##time_step", "isl.time_step", 4,
                  "Select step size for time slider", !schedule.empty());
 
     ImGui::BeginDisabled(schedule.empty());
-    if (ImGui::Button(ICON_FA_CIRCLE_ARROW_LEFT "##jump_first_epoch",ImVec2(icon_w, icon_w)))
+    if (ImGui::Button(ICON_FA_CIRCLE_ARROW_LEFT "##step_back",ImVec2(icon_w, icon_w)))
     {
+        /* Current step size */
+        const double step = getStepSize(cfg);
+
         *ctx->time_multiplier = 0.0;
-        *ctx->current_epoch = schedule.firstEpoch();
+        *ctx->current_epoch = std::max(schedule.firstEpoch(), *ctx->current_epoch - step);
     }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Jump to first scheduler epoch");
+        ImGui::SetTooltip("Move one time step backwards");
     ImGui::EndDisabled();
     ImGui::SameLine();
 
     ImGui::SetNextItemWidth(avail_w - 2*icon_w - ImGui::GetStyle().ItemSpacing.x);
     if (schedule.empty()) {
         ImGui::BeginDisabled();
-        double zero = 0.0, lo = 0.0, hi = 1.0;
-        ImGui::SliderScalar("##time_control", ImGuiDataType_Double, &zero, &lo, &hi, "n/a");
+        unsigned int zero = 0, lo = 0, hi = 86400;
+        ImGui::SliderScalar("##time_control", ImGuiDataType_U32, &zero, &lo, &hi, "n/a");
         ImGui::EndDisabled();
     }
     else
     {
-        const int step_idx = std::clamp(ToolSettingGetInt(cfg, "isl.time_step", 3),
-                                        0, kNumTimeSteps - 1);
-        const double step = kTimeStepSeconds[step_idx] / kEpochUnitSeconds;
+        /* Min, max and current epochs */
+        const double e_min = schedule.firstEpoch();
+        const double e_max = schedule.lastEpoch();
+        const double e     = *ctx->current_epoch;
 
-        const double v_min = schedule.firstEpoch();
-        const double v_max = schedule.lastEpoch();
-        const double cur   = *ctx->current_epoch;
+        /* Current step size */
+        const double step = getStepSize(cfg);
 
-        /* Slider works on an integer step index. The small epsilon avoids an
-         * extra step from floating-point noise; max(1) covers a single-epoch
-         * schedule, so the old min == max workaround is no longer needed. */
-        long long n_min = 0;
-        long long n_max = std::max(1LL, (long long)std::ceil((v_max - v_min) / step - 1e-9));
-        long long n     = std::clamp((long long)std::llround((cur - v_min) / step), n_min, n_max);
+        /* Slider works on an integer step index.
+         * The small epsilon avoids an extra step from floating-point noise.
+         * Using max(1.0, ...) protects against a case where v_max - v_min is zero. */
+        unsigned int n_min = 0;
+        unsigned int n_max = (unsigned int)std::max(1.0, std::ceil((e_max - e_min) / step - 1e-9));
+        unsigned int n     = std::clamp((unsigned int)std::round((e - e_min) / step), n_min, n_max);
 
-        if (ImGui::SliderScalar("##time_control", ImGuiDataType_S64,
+        if (ImGui::SliderScalar("##time_control", ImGuiDataType_U32,
                                 &n, &n_min, &n_max, " ", ImGuiSliderFlags_NoInput))
         {
             /* Clamp so the last step lands exactly on last epoch */
-            *ctx->current_epoch = std::min(v_min + (double)n * step, v_max);
+            *ctx->current_epoch = std::min(e_min + (double)n * step, e_max);
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Select epoch");
@@ -384,8 +395,11 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     ImGui::BeginDisabled(schedule.empty());
     if (ImGui::Button(ICON_FA_CIRCLE_ARROW_RIGHT "##jump_last_epoch",ImVec2(icon_w, icon_w)))
     {
+        /* Current step size */
+        const double step = getStepSize(cfg);
+
         *ctx->time_multiplier = 0.0;
-        *ctx->current_epoch = schedule.lastEpoch();
+        *ctx->current_epoch = std::min(schedule.lastEpoch(), *ctx->current_epoch + step);
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Jump to last scheduler epoch");
@@ -438,7 +452,6 @@ void DrawSceneIsl(SceneContext *sctx, AppConfig *cfg)
         }
     }
 
-#define DEBUG 0
 #if DEBUG > 0
     if (sctx->active_sat && sctx->active_sat->is_active)
     {
