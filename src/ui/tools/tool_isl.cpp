@@ -328,7 +328,7 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
                     "Show a ISL connections based on a scheduler file (3D only)");
     if (showIsl!=prev)
         ToolSettingSetBool(cfg, "isl.enabled", showIsl);
-    DrawScopeCombo("##label_mode", ISL_KEY_MODE, ISL_MODE_SELECTED_ONLY,
+    DrawScopeCombo("##label_mode", ISL_KEY_MODE, ISL_MODE_ALL,
                    "Sel: only the selected satellite's links; All: links for all active satellites; Fav: links for favorite satellites",
                    showIsl);
 
