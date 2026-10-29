@@ -1,5 +1,10 @@
 /*
  * tool_isl.cpp - ISL panel
+ *
+ * TODO:
+ *
+ *  - Make link data structures private of LinkSchedule class
+ *
  */
 
 #include <stdio.h>
@@ -13,13 +18,14 @@
 #include <iostream>
 #include <vector>
 
+#include "core/astro.h"
+#include "core/config.h"
+#include "core/theme.h"
+#include "data/storage.h"
 #include "tools.h"
 #include "tools_common.h"
 #include "tools_registry.h"
 #include "tools_settings.h"
-#include "core/astro.h"
-#include "core/config.h"
-#include "core/theme.h"
 #include "util/log.h"
 
 #include "imgui.h"
@@ -29,6 +35,14 @@
 #include "rlgl.h"
 
 #define DEBUG 0
+
+/* persisted config keys */
+#define ISL_KEY_MODE      "isl.mode"
+
+/* label scope values for ISL_KEY_MODE */
+#define ISL_MODE_SELECTED_ONLY 0  /* Sel: only the selected satellite gets a label */
+#define ISL_MODE_ALL           1  /* All: every active satellite gets a label */
+#define ISL_MODE_FAV           2  /* fav: only favorite satellites get a label */
 
 /* Data structures */
 
@@ -247,6 +261,8 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
 {
     (void)ctx;
 
+    ImGui::PushTextWrapPos(0.0f);
+
     /* fixed icon width so all checkboxes align vertically */
     const float icon_w = 24.0f;
     const float avail_w = ImGui::GetContentRegionAvail().x;
@@ -286,6 +302,22 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
         ImGui::EndDisabled();
     };
 
+    /* right-aligned Sel/All/Fav scope combo, disabled while the master toggle is off */
+    auto DrawScopeCombo = [&](const char *combo_id, const char *key, int default_mode,
+                              const char *tooltip, bool enabled) {
+        const float combo_w = 74.0f;
+        ImGui::BeginDisabled(!enabled);
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - combo_w);
+        ImGui::SetNextItemWidth(combo_w);
+        int mode = ToolSettingGetInt(cfg, key, default_mode);
+        const char *modes[] = { "Sel", "All", "Fav" };
+        if (ImGui::Combo(combo_id, &mode, modes, 3))
+            ToolSettingSetInt(cfg, key, mode);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", tooltip);
+        ImGui::EndDisabled();
+    };
+
     /*
      * Checkbox for ISL connections
      */
@@ -296,6 +328,9 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
                     "Show a ISL connections based on a scheduler file (3D only)");
     if (showIsl!=prev)
         ToolSettingSetBool(cfg, "isl.enabled", showIsl);
+    DrawScopeCombo("##label_mode", ISL_KEY_MODE, ISL_MODE_SELECTED_ONLY,
+                   "Sel: only the selected satellite's links; All: links for all active satellites; Fav: links for favorite satellites",
+                   showIsl);
 
     /*
      * ISL scheduler file selection
@@ -436,6 +471,9 @@ void DrawSceneIsl(SceneContext *sctx, AppConfig *cfg)
 
     if (ToolSettingGetBool(cfg, "isl.enabled", false))
     {
+        /* Get link display mode */
+        int mode = ToolSettingGetInt(cfg, ISL_KEY_MODE, ISL_MODE_ALL);
+
         const LinkEpoch* isls = schedule.find(sctx->current_epoch);
         if (isls) {
             for (int i = 0; i<isls->links.size(); i++)
@@ -450,10 +488,20 @@ void DrawSceneIsl(SceneContext *sctx, AppConfig *cfg)
                     if (!satellites[j].is_active)
                         continue;
 
+                    // TODO: include check for hovered satellite!
+
                     /* Show only links from selected satellite */
-                    if(sctx->selected_sat && \
-                       (isls->links[i].norad1 != sctx->selected_sat->norad_id_num && \
-                        isls->links[i].norad2 != sctx->selected_sat->norad_id_num))
+                    if (mode == ISL_MODE_SELECTED_ONLY && \
+                        (!sctx->selected_sat ||
+                        (isls->links[i].norad1 != sctx->selected_sat->norad_id_num && \
+                         isls->links[i].norad2 != sctx->selected_sat->norad_id_num)))
+                        continue;
+
+                    /* Show only links from favorite satellite */
+                    if (mode == ISL_MODE_FAV && \
+                        ((!IsFavorite(isls->links[i].norad1) && !IsFavorite(isls->links[i].norad2)) || \
+                        (isls->links[i].norad1 != satellites[j].norad_id_num && \
+                         isls->links[i].norad2 != satellites[j].norad_id_num)))
                         continue;
 
                     if (isls->links[i].norad1 == satellites[j].norad_id_num)
@@ -462,7 +510,7 @@ void DrawSceneIsl(SceneContext *sctx, AppConfig *cfg)
                         pos3d2 = Vector3Scale(satellites[j].current_pos, 1.0f / DRAW_SCALE);
                 }
 
-                if(Vector3Length(pos3d1)<1 || Vector3Length(pos3d2)<1)
+                if (Vector3Length(pos3d1)<1 || Vector3Length(pos3d2)<1)
                     continue;
 
                 /* Draw ISL connections with depth test and depth mask enabled */
