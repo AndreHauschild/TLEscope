@@ -356,6 +356,9 @@ void DrawPanelDataSources(UIContext *ctx, AppConfig *cfg)
         float file_btn_w = ImGui::GetFrameHeight();
         static char s_file_buf[512] = "";
 
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+            "Accepted formats: 3LE, JSON OMM, CSV OMM, KVN OMM, XML OMM");
+
         ImGui::SetNextItemWidth(avail_w - 2*file_btn_w - ImGui::GetStyle().ItemSpacing.x);
         ImGui::InputText("##custom_file", s_file_buf, sizeof(s_file_buf));
         ImGui::SameLine();
@@ -364,13 +367,11 @@ void DrawPanelDataSources(UIContext *ctx, AppConfig *cfg)
         {
             g_ui.file_dialog_tle.open();
         }
-        if (g_ui.file_dialog_tle.isOpen())
+        if (g_ui.file_dialog_tle.isOpen() && g_ui.file_dialog_tle.draw())
         {
-            if (g_ui.file_dialog_tle.draw())
-            {
-                std::snprintf(s_file_buf, sizeof(s_file_buf), "%s",
-                              g_ui.file_dialog_tle.fileName().c_str());
-            }
+
+            std::snprintf(s_file_buf, sizeof(s_file_buf), "%s",
+                          g_ui.file_dialog_tle.fileName().c_str());
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Select file");
