@@ -7,7 +7,7 @@
 > [!WARNING]
 > **This branch is considered legacy.** minor bugfixes within reason to `main` are welcome, however TLEscope is currently being majorly revamped as part of the `extremelywip` branch.
 >
-> v4.0.0 is expected to release in Q4 2026.
+> **v4.0.0 is expected to release in November 2026.**
 
 # **TLEscope**
 ​TLEscope is a satellite visualization tool designed to transform Two-Line Element (TLE) sets into intuitive, interactive data. It provides a streamlined interface for tracking the current and future positions of orbital bodies across both 3D and 2D environments.
