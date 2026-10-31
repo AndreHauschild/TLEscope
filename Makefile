@@ -112,37 +112,37 @@ clean-libs:
 	rm -f $(RAYLIB_SRC)/raygui.c $(RAYLIB_SRC)/*-protocol.h $(RAYLIB_SRC)/*-protocol-code.h $(RAYLIB_SRC)/*-protocol-code.c
 
 linux: raylib bin/TLEscope
+	rm -rf $(DIST_LINUX)
 	@mkdir -p $(DIST_LINUX)
 	cp bin/TLEscope $(DIST_LINUX)/TLEscope.tmp && mv -f $(DIST_LINUX)/TLEscope.tmp $(DIST_LINUX)/TLEscope
 	cp -r themes $(DIST_LINUX)/
-	cp settings.json $(DIST_LINUX)/ 2>/dev/null || true
 	@echo "Linux build bundled in $(DIST_LINUX)/"
 	@echo "Run it with: cd $(DIST_LINUX)/ && ./TLEscope"
 
 macos: raylib bin/TLEscope-macos
+	rm -rf $(DIST_MACOS)
 	@mkdir -p $(DIST_MACOS)
 	cp bin/TLEscope-macos $(DIST_MACOS)/TLEscope
 	cp -r themes $(DIST_MACOS)/
-	cp settings.json $(DIST_MACOS)/ 2>/dev/null || true
 	@echo "macOS build bundled in $(DIST_MACOS)/"
 	@echo "Run it with: cd $(DIST_MACOS)/ && ./TLEscope"
 	@echo "To make a MacOS bundle: ./macos_bundle.sh"
 
 windows: raylib bin/TLEscope.exe
+	rm -rf $(DIST_WIN)
 	@mkdir -p $(DIST_WIN)
 	cp bin/TLEscope.exe $(DIST_WIN)/
 	cp $(MINGW_PREFIX)/bin/libzstd*.dll $(DIST_WIN)/ 2>/dev/null || true
 	cp -r themes $(DIST_WIN)/
-	cp settings.json $(DIST_WIN)/ 2>/dev/null || true
 	cp $(MINGW_PREFIX)/bin/libssp*.dll $(DIST_WIN)/ 2>/dev/null || true
 	@echo "Windows build bundled in $(DIST_WIN)/, run it from there!"
 
 windows-arm64: raylib bin/TLEscope-arm64.exe
+	rm -rf $(DIST_WIN_ARM64)
 	@mkdir -p $(DIST_WIN_ARM64)
 	cp bin/TLEscope-arm64.exe $(DIST_WIN_ARM64)/TLEscope.exe
 	cp $(CLANG64_PREFIX)/bin/libzstd*.dll $(DIST_WIN_ARM64)/ 2>/dev/null || true
 	cp -r themes $(DIST_WIN_ARM64)/
-	cp settings.json $(DIST_WIN_ARM64)/ 2>/dev/null || true
 	cp $(CLANG64_PREFIX)/bin/libssp*.dll $(DIST_WIN_ARM64)/ 2>/dev/null || true
 	@echo "Windows ARM64 build bundled in $(DIST_WIN_ARM64)/, run it from there!"
 

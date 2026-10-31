@@ -39,7 +39,6 @@ Section "Install"
 	# setting the OutPath sets the working directory for shortcuts created below
 	SetOutPath "$APPDATA\TLEscope"
 	File /r "dist\TLEscope-Win-Portable\themes"
-	File /nonfatal "dist\TLEscope-Win-Portable\settings.json"
 	File /nonfatal "dist\TLEscope-Win-Portable\data.tle"
 	File /nonfatal "dist\TLEscope-Win-Portable\persistence.bin"
 	
