@@ -125,7 +125,7 @@ macos: $(ICON_OUT) raylib bin/TLEscope-macos
 	@mkdir -p $(DIST_MACOS)
 	cp bin/TLEscope-macos $(DIST_MACOS)/TLEscope
 	cp -r themes $(DIST_MACOS)/
-	cp $(ICON_OUT) $(DIST_LINUX)/
+	cp $(ICON_OUT) $(DIST_MACOS)/
 	@echo "macOS build bundled in $(DIST_MACOS)/"
 	@echo "Run it with: cd $(DIST_MACOS)/ && ./TLEscope"
 	@echo "To make a MacOS bundle: ./macos_bundle.sh"
