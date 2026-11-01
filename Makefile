@@ -116,6 +116,7 @@ linux: raylib bin/TLEscope
 	@mkdir -p $(DIST_LINUX)
 	cp bin/TLEscope $(DIST_LINUX)/TLEscope.tmp && mv -f $(DIST_LINUX)/TLEscope.tmp $(DIST_LINUX)/TLEscope
 	cp -r themes $(DIST_LINUX)/
+	cp $(ICON_OUT) $(DIST_LINUX)/
 	@echo "Linux build bundled in $(DIST_LINUX)/"
 	@echo "Run it with: cd $(DIST_LINUX)/ && ./TLEscope"
 
@@ -124,6 +125,7 @@ macos: raylib bin/TLEscope-macos
 	@mkdir -p $(DIST_MACOS)
 	cp bin/TLEscope-macos $(DIST_MACOS)/TLEscope
 	cp -r themes $(DIST_MACOS)/
+	cp $(ICON_OUT) $(DIST_LINUX)/
 	@echo "macOS build bundled in $(DIST_MACOS)/"
 	@echo "Run it with: cd $(DIST_MACOS)/ && ./TLEscope"
 	@echo "To make a MacOS bundle: ./macos_bundle.sh"
@@ -155,12 +157,12 @@ win-installer: windows $(ICON_OUT)
 # microsoft, and I mean this sincerely, please keep bloating windows so that people stop using it and annoying me about it thanks bye.
 
 # depends on the raylib archive so a parallel make cannot link before it exists
-bin/TLEscope: $(OBJ) $(RAYLIB_LIB) | bin
+bin/TLEscope: $(OBJ) $(ICON_OUT) $(RAYLIB_LIB) | bin
 	@printf "\033[1;35mLinking...\033[0m\n"
 	$(CC_LINUX) $(CXXFLAGS_LIN) -o $@ $(OBJ) $(LDFLAGS_LIN)
 	@printf "\033[1;32mBuild complete! \033[0m\033[0;36mTLEscope v$(GIT_VERSION)\033[0m\n"
 
-bin/TLEscope-macos: raylib $(SRC) src/util/window_macos.mm src/util/proxy_macos.cpp $(IMGUI_SRC) $(RLIMGUI_SRC) | bin
+bin/TLEscope-macos: $(ICON_OUT) raylib $(SRC) src/util/window_macos.mm src/util/proxy_macos.cpp $(IMGUI_SRC) $(RLIMGUI_SRC) | bin
 	$(CC_MACOS) $(CXXFLAGS) $(RAYLIB_CFLAGS) -o $@ $(filter-out raylib,$^) $(LDFLAGS_MACOS)
 
 bin/TLEscope.exe: $(OBJ_WIN) build_win/versioninfo.o $(RAYLIB_LIB) | bin
@@ -223,7 +225,7 @@ bin:
 clean:
 	rm -rf build build_win bin dist
 
-install: linux
+install:
 	@echo "Installing to $(DESTDIR)$(INSTALL_DIR)..."
 	install -d $(DESTDIR)$(INSTALL_DIR)
 	cp -r $(DIST_LINUX)/* $(DESTDIR)$(INSTALL_DIR)/
@@ -242,6 +244,7 @@ install: linux
 	@echo 'Type=Application' >> $(DESTDIR)$(APP_DIR)/TLEscope.desktop
 	@echo 'Name=TLEscope' >> $(DESTDIR)$(APP_DIR)/TLEscope.desktop
 	@echo 'Exec=TLEscope' >> $(DESTDIR)$(APP_DIR)/TLEscope.desktop
+	@echo 'Icon=$(DESTDIR)$(INSTALL_DIR)/logo' >> $(DESTDIR)$(APP_DIR)/TLEscope.desktop
 	@echo 'Terminal=false' >> $(DESTDIR)$(APP_DIR)/TLEscope.desktop
 	@echo 'Categories=Utility;Science;' >> $(DESTDIR)$(APP_DIR)/TLEscope.desktop
 	@echo "Install complete. You can now execute 'TLEscope' from anywhere."
