@@ -225,7 +225,7 @@ bin:
 clean:
 	rm -rf build build_win bin dist
 
-install: linux
+install:
 	@echo "Installing to $(DESTDIR)$(INSTALL_DIR)..."
 	install -d $(DESTDIR)$(INSTALL_DIR)
 	cp -r $(DIST_LINUX)/* $(DESTDIR)$(INSTALL_DIR)/
