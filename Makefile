@@ -162,7 +162,7 @@ bin/TLEscope: $(OBJ) $(ICON_OUT) $(RAYLIB_LIB) | bin
 	$(CC_LINUX) $(CXXFLAGS_LIN) -o $@ $(OBJ) $(LDFLAGS_LIN)
 	@printf "\033[1;32mBuild complete! \033[0m\033[0;36mTLEscope v$(GIT_VERSION)\033[0m\n"
 
-bin/TLEscope-macos: $(ICON_OUT) raylib $(SRC) src/util/window_macos.mm src/util/proxy_macos.cpp $(IMGUI_SRC) $(RLIMGUI_SRC) | bin
+bin/TLEscope-macos: raylib $(SRC) src/util/window_macos.mm src/util/proxy_macos.cpp $(IMGUI_SRC) $(RLIMGUI_SRC) | bin
 	$(CC_MACOS) $(CXXFLAGS) $(RAYLIB_CFLAGS) -o $@ $(filter-out raylib,$^) $(LDFLAGS_MACOS)
 
 bin/TLEscope.exe: $(OBJ_WIN) build_win/versioninfo.o $(RAYLIB_LIB) | bin
