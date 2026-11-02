@@ -162,7 +162,7 @@ static LinkSchedule schedule;
 
 /* File dialog object */
 
-FileDialog file_dialog_isl = FileDialog(".txt");
+FileDialog file_dialog_isl = FileDialog();
 
 /* Time step table: the combo labels and the slider step come from the same
  * source, so they can't get out of sync. */
@@ -357,7 +357,8 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     ImGui::SameLine();
     if (ImGui::Button(ICON_FA_FOLDER "##select_scheduler_file",ImVec2(icon_w, icon_w)))
     {
-        file_dialog_isl.open(ToolSettingGetString(cfg, "isl.schedulerFile", ""));
+        file_dialog_isl.open("Open ISL schedule","*.txt",
+                             ToolSettingGetString(cfg, "isl.schedulerFile", ""));
     }
     if (file_dialog_isl.isOpen() && file_dialog_isl.draw())
     {
