@@ -357,8 +357,10 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     ImGui::SameLine();
     if (ImGui::Button(ICON_FA_FOLDER "##select_scheduler_file",ImVec2(icon_w, icon_w)))
     {
-        file_dialog_isl.open("Open ISL schedule","*.txt",
-                             ToolSettingGetString(cfg, "isl.schedulerFile", ""));
+        const std::vector<std::string> filter = { "Text Files", "*.txt", "All Files", "*" };
+        file_dialog_isl.open("Open ISL schedule",
+                             ToolSettingGetString(cfg, "isl.schedulerFile", ""),
+                             filter);
     }
     if (file_dialog_isl.isOpen() && file_dialog_isl.draw())
     {
