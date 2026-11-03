@@ -162,7 +162,7 @@ static LinkSchedule schedule;
 
 /* File dialog object */
 
-FileDialog file_dialog_isl = FileDialog();
+FileDialog file_dialog_isl;
 
 /* Time step table: the combo labels and the slider step come from the same
  * source, so they can't get out of sync. */
