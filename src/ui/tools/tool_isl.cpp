@@ -91,7 +91,7 @@ bool LinkSchedule::read(const std::string &filename)
 
     if (!file.is_open())
     {
-        std::cerr << "Cannot open ISL schedule file: " << filename << std::endl;
+        LOG_ERROR("Cannot open ISL schedule file: %s", filename);
         return false;
     }
 
@@ -361,6 +361,7 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
         file_dialog_isl.open("Open ISL schedule",
                              ToolSettingGetString(cfg, "isl.schedulerFile", ""),
                              filter);
+        LOG_INFO("Open scheduler file %s",ToolSettingGetString(cfg, "isl.schedulerFile", ""));
     }
     if (file_dialog_isl.isOpen() && file_dialog_isl.draw())
     {
