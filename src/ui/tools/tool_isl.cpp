@@ -518,7 +518,7 @@ void DrawSceneIsl(SceneContext *sctx, AppConfig *cfg)
 
                 /* Draw ISL connections with depth test and depth mask enabled */
                 rlDrawRenderBatchActive();
-                DrawLine3D(pos3d1, pos3d2, ApplyAlpha(RED, 0.6f));
+				DrawLine3D(pos3d1, pos3d2, ApplyAlpha(RED, 1.0f));
                 rlDrawRenderBatchActive();
             }
         }
