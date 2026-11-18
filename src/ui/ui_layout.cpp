@@ -1,12 +1,3 @@
-/*
- * ui_layout.cpp - Sidebar / panel workspace layout engine
- *
- * Implements the three-section workspace: a left sidebar (actions), a
- * transparent center canvas (simulation), and a right sidebar (inspector).
- * Sidebars are resizable, snap-hide to the screen edge (pull-tab to
- * restore), and contain reorderable accordion panels.
- */
-
 #include "ui_layout.h"
 #include "imgui_theme.h"
 #include "tools/tools.h"
@@ -35,6 +26,8 @@
 #include <cstring>
 #include <cfloat>
 #include <algorithm>
+#include <string>
+#include <thread>
 
 /* -- Layout constants ------------------------------------------------------ */
 
@@ -240,6 +233,8 @@ void LayoutTogglePanel(PanelId id)
     {
         g_layout.last_active_panel = -1;
     }
+    LOG_DEBUG("Panel %s toggled %s", g_panel_defs[id].title,
+              g_layout.panel_open[id] ? "open" : "closed");
 }
 
 void LayoutOpenPanel(PanelId id)
@@ -248,6 +243,7 @@ void LayoutOpenPanel(PanelId id)
     g_layout.panel_open[id] = true;
     g_layout.last_active_panel = id;
     EnsureSidebar(g_panel_defs[id].default_side);
+    LOG_DEBUG("Panel opened: %s", g_panel_defs[id].title);
 }
 
 /** move a panel to the given sidebar, appending it to that side's order */
@@ -418,6 +414,8 @@ void LayoutSetSidebarVisible(SidebarSide side, bool visible)
 {
     if (side == SIDEBAR_LEFT) { g_layout.left_visible = visible; if (visible) g_layout.left_hidden = false; }
     if (side == SIDEBAR_RIGHT) { g_layout.right_visible = visible; if (visible) g_layout.right_hidden = false; }
+    LOG_DEBUG("Sidebar %s: %s", side == SIDEBAR_LEFT ? "left" : "right",
+              visible ? "shown" : "hidden");
 }
 
 /* -- Viewport rectangle ----------------------------------------------------- */
@@ -470,6 +468,7 @@ void LayoutToggleCleanView(void)
         LayoutSetSidebarVisible(SIDEBAR_RIGHT, saved_right);
         LayoutSetBottomBarVisible(saved_bottom);
     }
+    LOG_INFO("Clean view: %s", g_layout.clean_view ? "on" : "off");
 }
 
 /* -- Settings modal helpers ------------------------------------------------- */
@@ -512,6 +511,14 @@ static void NavTooltip(const char *text)
     dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), fill, round);
     dl->AddRect(p, ImVec2(p.x + w, p.y + h), edge, round, 0, UIPx(1.0f));
     dl->AddText(NULL, 0.0f, ImVec2(p.x + pad_x, p.y + pad_y), col, text, NULL, wrap_w);
+}
+
+// OpenURL blocks on system(), run off the UI thread
+static void OpenURLAsync(const char *url)
+{
+    if (!url) return;
+    std::string u(url);
+    std::thread([u]() { OpenURL(u.c_str()); }).detach();
 }
 
 static void DrawRotatorNavIndicator(UIContext *ctx, AppConfig *cfg)
@@ -613,9 +620,7 @@ static void DrawRotatorNavIndicator(UIContext *ctx, AppConfig *cfg)
     }
 }
 
-/* ========================================================================== */
-/*  Notch (show/hide tab)                                                     */
-/* ========================================================================== */
+/* Notch (show/hide tab) */
 
 /** draw the show/hide notch at a sidebar edge (also on the visible edge, to hide it) */
 static void DrawNotch(bool is_left, float nav_h, float content_h, bool sidebar_visible)
@@ -802,9 +807,7 @@ static void DrawNotch(bool is_left, float nav_h, float content_h, bool sidebar_v
     ImGui::PopStyleVar(4);
 }
 
-/* ========================================================================== */
-/*  Resize strip                                                              */
-/* ========================================================================== */
+/* Resize strip */
 
 static void DrawResizeStrip(bool is_left, float nav_h, float content_h)
 {
@@ -881,9 +884,7 @@ static void DrawResizeStrip(bool is_left, float nav_h, float content_h)
     ImGui::PopStyleVar(4);
 }
 
-/* ========================================================================== */
-/*  Accordion header + reorder                                                */
-/* ========================================================================== */
+/* Accordion header + reorder */
 
 static void DrawAccordionHeader(const PanelDef *def, bool *open, int order_idx, bool is_left)
 {
@@ -982,9 +983,7 @@ static void DrawAccordionHeader(const PanelDef *def, bool *open, int order_idx, 
     ImGui::PopID();
 }
 
-/* ========================================================================== */
-/*  Reorder finalisation                                                      */
-/* ========================================================================== */
+/* Reorder finalisation */
 
 /** map a visible header target to a full-array insertion index (dragged = -1 if not in this array) */
 static int FindInsertIndex(int *order, int dragged, int visible_target)
@@ -1137,9 +1136,7 @@ static void FinishReorder(AppConfig *cfg)
     }
 }
 
-/* ========================================================================== */
-/*  Sidebar                                                                   */
-/* ========================================================================== */
+/* Sidebar */
 
 static void DrawSidebar(bool is_left, UIContext *ctx, AppConfig *cfg)
 {
@@ -1255,9 +1252,7 @@ static void DrawSidebar(bool is_left, UIContext *ctx, AppConfig *cfg)
     ImGui::PopStyleVar(3);
 }
 
-/* ========================================================================== */
-/*  Navigation bar                                                            */
-/* ========================================================================== */
+/* Navigation bar */
 
 void DrawNavBar(UIContext *ctx, AppConfig *cfg)
 {
@@ -1355,19 +1350,28 @@ void DrawNavBar(UIContext *ctx, AppConfig *cfg)
         }
 
         DrawRotatorNavIndicator(ctx, cfg);
+        if (cfg->show_support_button)
+        {
+            float rot_left = g_layout.rotator_nav_rect.x0 - ImGui::GetWindowPos().x + ImGui::GetScrollX();
+            float sw = ImGui::CalcTextSize(ICON_FA_HEART "  Support").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+            ImGui::SameLine();
+            ImGui::SetCursorPosX(rot_left - ImGui::GetStyle().ItemSpacing.x - sw);
+            if (ImGui::Button(ICON_FA_HEART "  Support"))
+                OpenURLAsync("https://ko-fi.com/aweeri");
+            if (ImGui::IsItemHovered())
+                NavTooltip("Support TLEscope development");
+        }
 
         ImGui::EndMainMenuBar();
     }
 }
 
-/* ========================================================================== */
-/*  Settings modal                                                            */
-/* ========================================================================== */
+/* Settings modal */
 
 void DrawSettingsModal(UIContext *ctx, AppConfig *cfg)
 {
     if (g_layout.settings_open)
-        ImGui::OpenPopup("Settings");
+        ImGui::OpenPopup(ICON_FA_GEAR "  Settings");
     /* fixed width + auto height so expanding sections never widen the modal */
     ImGui::SetNextWindowSize(ImVec2(UIPx(420.0f), 0), ImGuiCond_Always);
     // cap the height so the modal cannot cover the time controls
@@ -1379,8 +1383,110 @@ void DrawSettingsModal(UIContext *ctx, AppConfig *cfg)
 
     /* p_open draws a native close button; clicking it clears settings_open */
     bool *p_open = &g_layout.settings_open;
-    if (ImGui::BeginPopupModal("Settings", p_open, ImGuiWindowFlags_AlwaysAutoResize))
+    if (ImGui::BeginPopupModal(ICON_FA_GEAR "  Settings", p_open, ImGuiWindowFlags_AlwaysAutoResize))
     {
+        /* ---- Locations section (single source of truth for markers + home) */
+        if (ImGui::CollapsingHeader("Locations", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            static int editing = -1;   /* index of the location being edited, -1 = none */
+            if (editing >= location_count) editing = -1;
+
+            if (location_count == 0)
+            {
+                ImGui::TextDisabled("No locations yet. Add one below.");
+            }
+            else
+            {
+                /* aligned columns: name | home | edit | remove */
+                float btn_w = ImGui::GetFrameHeight();
+                float spacing = ImGui::GetStyle().ItemSpacing.x;
+                float row_w = ImGui::GetContentRegionAvail().x;
+                float btn_start = row_w - 3.0f * btn_w - 2.0f * spacing;
+
+                ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 2.0f));
+                /* pull the FontAwesome glyphs down and left so they sit centered in the square buttons */
+                ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0.45f, 0.6f));
+
+                for (int i = 0; i < location_count; i++)
+                {
+                    Location *loc = &locations[i];
+                    char btn_id[48];
+
+                    ImGui::Text("%s%s", loc->name, loc->is_home ? "  (Home)" : "");
+
+                    ImGui::SameLine(btn_start);
+                    snprintf(btn_id, sizeof(btn_id), "%s##home_%d", ICON_FA_HOUSE, i);
+                    bool was_home = loc->is_home;
+                    if (was_home)
+                        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 200, 0, 255));
+                    if (ImGui::Button(btn_id, ImVec2(btn_w, btn_w)))
+                    {
+                        if (!loc->is_home)
+                            SetHomeLocation(i);
+                    }
+                    if (was_home)
+                        ImGui::PopStyleColor(1);
+
+                    ImGui::SameLine();
+                    snprintf(btn_id, sizeof(btn_id), "%s##edit_%d", ICON_FA_PEN, i);
+                    if (ImGui::Button(btn_id, ImVec2(btn_w, btn_w)))
+                        editing = i;
+
+                    ImGui::SameLine();
+                    snprintf(btn_id, sizeof(btn_id), "%s##remove_%d", ICON_FA_XMARK, i);
+                    Color err_theme = g_theme.ui.error;
+                    ImGui::PushStyleColor(ImGuiCol_Text,
+                        IM_COL32(err_theme.r, err_theme.g, err_theme.b, 255));
+                    if (ImGui::Button(btn_id, ImVec2(btn_w, btn_w)))
+                    {
+                        RemoveLocation(i);
+                        if (editing == i) editing = -1;
+                        if (editing > i) editing--;
+                        i--; /* re-check the shifted row */
+                    }
+                    ImGui::PopStyleColor(1);
+                }
+
+                ImGui::PopStyleVar();
+                ImGui::PopStyleVar();
+            }
+
+            /* inline edit fields for the row being edited */
+            if (editing >= 0 && editing < location_count)
+            {
+                Location *loc = &locations[editing];
+                ImGui::Separator();
+                ImGui::Text("Edit: %s", loc->name);
+                ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 4.0f));
+                ImGui::InputText("Name", loc->name, sizeof(loc->name));
+                ImGui::InputFloat("Latitude", &loc->lat);
+                ImGui::InputFloat("Longitude", &loc->lon);
+                ImGui::InputFloat("Altitude", &loc->alt);
+                ImGui::PopStyleVar();
+
+                ImGui::Spacing();
+                if (ImGui::Button("Done"))
+                    editing = -1;
+                ImGui::SameLine();
+                if (ImGui::Button("Pick on Map"))
+                {
+                    /* picking on the map updates the location being edited */
+                    pick_location_index = editing;
+                    *ctx->picking_home = true;
+                    g_layout.settings_open = false;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+
+            ImGui::Separator();
+            if (ImGui::Button("Add Location"))
+            {
+                const int idx = AddLocation("New Location", 0.0f, 0.0f, 0.0f);
+                if (idx >= 0)
+                    editing = idx;
+            }
+        }
+
         /* ---- Appearance section ------------------------------------------ */
         if (ImGui::CollapsingHeader("Appearance", ImGuiTreeNodeFlags_DefaultOpen))
         {
@@ -1438,6 +1544,10 @@ void DrawSettingsModal(UIContext *ctx, AppConfig *cfg)
         if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen))
         {
             ImGui::Checkbox("Show Statistics", &cfg->show_statistics);
+            if (ImGui::Checkbox("Show Support Button", &cfg->show_support_button))
+                SaveAppConfig("settings.json", cfg);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Show the Support (heart) button in the top navigation bar");
             ImGui::Checkbox("Limit Map Zoom-Out", &cfg->limit_map_zoomout);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Keep the 2D map filling the viewport by capping how far it can zoom out");
@@ -1448,6 +1558,12 @@ void DrawSettingsModal(UIContext *ctx, AppConfig *cfg)
             ImGui::Checkbox("Smooth Camera (3D Globe)", &cfg->camera_smoothing_3d);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Ease 3D globe orbit and zoom instead of snapping directly");
+
+            ImGui::BeginDisabled(!cfg->show_sun);
+            ImGui::Checkbox("Anamorphic Sun Flare", &cfg->show_sun_anamorphic);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("[WORK IN PROGRESS] Replace the default sun flare with a horizontal anamorphic streak.\n3D viewport only.");
+            ImGui::EndDisabled();
 
             /* predicted (future) orbit steps per ground track in 2D mode; 0.25-orbit grid, default 2.0 */
             float orbits_steps = ToolSettingGetFloat(cfg, LAYERS_KEY_FUTURE_ORBITS_STEPS,
@@ -1585,108 +1701,6 @@ void DrawSettingsModal(UIContext *ctx, AppConfig *cfg)
             ImGui::TextDisabled("Default: 45 s. Range: 15-300 s.");
         }
 
-        /* ---- Locations section (single source of truth for markers + home) */
-        if (ImGui::CollapsingHeader("Locations"))
-        {
-            static int editing = -1;   /* index of the location being edited, -1 = none */
-            if (editing >= location_count) editing = -1;
-
-            if (location_count == 0)
-            {
-                ImGui::TextDisabled("No locations yet. Add one below.");
-            }
-            else
-            {
-                /* aligned columns: name | home | edit | remove */
-                float btn_w = ImGui::GetFrameHeight();
-                float spacing = ImGui::GetStyle().ItemSpacing.x;
-                float row_w = ImGui::GetContentRegionAvail().x;
-                float btn_start = row_w - 3.0f * btn_w - 2.0f * spacing;
-
-                ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 2.0f));
-                /* pull the FontAwesome glyphs down and left so they sit centered in the square buttons */
-                ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0.45f, 0.6f));
-
-                for (int i = 0; i < location_count; i++)
-                {
-                    Location *loc = &locations[i];
-                    char btn_id[48];
-
-                    ImGui::Text("%s%s", loc->name, loc->is_home ? "  (Home)" : "");
-
-                    ImGui::SameLine(btn_start);
-                    snprintf(btn_id, sizeof(btn_id), "%s##home_%d", ICON_FA_HOUSE, i);
-                    bool was_home = loc->is_home;
-                    if (was_home)
-                        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 200, 0, 255));
-                    if (ImGui::Button(btn_id, ImVec2(btn_w, btn_w)))
-                    {
-                        if (!loc->is_home)
-                            SetHomeLocation(i);
-                    }
-                    if (was_home)
-                        ImGui::PopStyleColor(1);
-
-                    ImGui::SameLine();
-                    snprintf(btn_id, sizeof(btn_id), "%s##edit_%d", ICON_FA_PEN, i);
-                    if (ImGui::Button(btn_id, ImVec2(btn_w, btn_w)))
-                        editing = i;
-
-                    ImGui::SameLine();
-                    snprintf(btn_id, sizeof(btn_id), "%s##remove_%d", ICON_FA_XMARK, i);
-                    Color err_theme = g_theme.ui.error;
-                    ImGui::PushStyleColor(ImGuiCol_Text,
-                        IM_COL32(err_theme.r, err_theme.g, err_theme.b, 255));
-                    if (ImGui::Button(btn_id, ImVec2(btn_w, btn_w)))
-                    {
-                        RemoveLocation(i);
-                        if (editing == i) editing = -1;
-                        if (editing > i) editing--;
-                        i--; /* re-check the shifted row */
-                    }
-                    ImGui::PopStyleColor(1);
-                }
-
-                ImGui::PopStyleVar();
-                ImGui::PopStyleVar();
-            }
-
-            /* inline edit fields for the row being edited */
-            if (editing >= 0 && editing < location_count)
-            {
-                Location *loc = &locations[editing];
-                ImGui::Separator();
-                ImGui::Text("Edit: %s", loc->name);
-                ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 4.0f));
-                ImGui::InputText("Name", loc->name, sizeof(loc->name));
-                ImGui::InputFloat("Latitude", &loc->lat);
-                ImGui::InputFloat("Longitude", &loc->lon);
-                ImGui::InputFloat("Altitude", &loc->alt);
-                ImGui::PopStyleVar();
-
-                ImGui::Spacing();
-                if (ImGui::Button("Done"))
-                    editing = -1;
-                ImGui::SameLine();
-                if (ImGui::Button("Pick on Map"))
-                {
-                    /* picking on the map updates the location being edited */
-                    pick_location_index = editing;
-                    *ctx->picking_home = true;
-                    g_layout.settings_open = false;
-                    ImGui::CloseCurrentPopup();
-                }
-            }
-
-            ImGui::Separator();
-            if (ImGui::Button("Add Location"))
-            {
-                const int idx = AddLocation("New Location", 0.0f, 0.0f, 0.0f);
-                if (idx >= 0)
-                    editing = idx;
-            }
-        }
-
         /* ---- Notifications section (ROADMAP section 8.1) ---------------- */
         if (ImGui::CollapsingHeader("Notifications"))
         {
@@ -1727,6 +1741,28 @@ void DrawSettingsModal(UIContext *ctx, AppConfig *cfg)
             float sz = ExpoModeGetSize(cfg);
             if (ImGui::SliderFloat("Overlay Size", &sz, EXPO_SIZE_MIN, EXPO_SIZE_MAX, "%.2fx")) ExpoModeSetSize(cfg, sz);
             if (ImGui::IsItemDeactivatedAfterEdit()) SaveAppConfig("settings.json", cfg);
+
+            ImGui::Separator();
+            ImGui::TextDisabled("File Logging");
+
+            if (ImGui::Combo("File Log Level", &cfg->file_log_level, "Off\0Debug\0Info\0Warn\0Error\0"))
+            {
+                LogSetFileLevel(cfg->file_log_level);
+                SaveAppConfig("settings.json", cfg);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Minimum severity written to the log file. Off disables file logging.");
+
+            if (ImGui::SliderInt("Log File Max Size (KB)", &cfg->log_file_max_kb, 16, 102400, "%d", ImGuiSliderFlags_Logarithmic))
+                LogSetFileMaxBytes((size_t)cfg->log_file_max_kb * 1024);
+            if (ImGui::IsItemDeactivatedAfterEdit())
+                SaveAppConfig("settings.json", cfg);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("When the log file exceeds this size it is trimmed to 75%% of the limit.");
+
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextDisabled("%s", AppConfigPath("TLEscope.log"));
+            ImGui::PopTextWrapPos();
         }
 
         if (ImGui::CollapsingHeader("Integrations"))
@@ -1817,22 +1853,20 @@ static void DrawToolRow(const PanelDef *def, AppConfig *cfg)
     ImGui::PopID();
 }
 
-/* ========================================================================== */
-/*  Tools modal                                                               */
-/* ========================================================================== */
+/* Tools modal */
 
 void DrawToolsModal(UIContext *ctx, AppConfig *cfg)
 {
     (void)ctx;
     if (g_layout.tools_open)
-        ImGui::OpenPopup("Manage Tools");
+        ImGui::OpenPopup(ICON_FA_SCREWDRIVER_WRENCH "  Manage Tools");
     ImGui::SetNextWindowSize(ImVec2(UIPx(460.0f), 0), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2((float)GetScreenWidth() * 0.5f, (float)GetScreenHeight() * 0.5f),
                             ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 
     /* p_open draws a native close button; clicking it clears tools_open */
     bool *p_open = &g_layout.tools_open;
-    if (ImGui::BeginPopupModal("Manage Tools", p_open, ImGuiWindowFlags_AlwaysAutoResize))
+    if (ImGui::BeginPopupModal(ICON_FA_SCREWDRIVER_WRENCH "  Manage Tools", p_open, ImGuiWindowFlags_AlwaysAutoResize))
     {
         /* ---- Core Functions --------------------------------------------- */
         if (ImGui::CollapsingHeader("Core Functions", ImGuiTreeNodeFlags_DefaultOpen))
@@ -1883,9 +1917,7 @@ void DrawToolsModal(UIContext *ctx, AppConfig *cfg)
     }
 }
 
-/* ========================================================================== */
-/*  Main layout entry point                                                   */
-/* ========================================================================== */
+/* Main layout entry point */
 
 void DrawUILayout(UIContext *ctx, AppConfig *cfg)
 {

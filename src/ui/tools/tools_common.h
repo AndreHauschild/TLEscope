@@ -6,16 +6,6 @@
 #include "ui/ui.h"
 #include "imgui.h"
 
-/**
- * @file tools_common.h
- * @brief Shared helpers and state used by multiple tool panels.
- */
-
-/* -- Shared state ---------------------------------------------------------- */
-
-extern bool log_auto_scroll;        /* log auto-scroll preference               */
-extern bool log_show_timestamps;    /* show timestamps in log entries (default off) */
-
 /* -- Layers panel persistence keys (see tool_layers.cpp) ------------------- */
 
 /* universal Orbits layer (see tool_layers.cpp) */

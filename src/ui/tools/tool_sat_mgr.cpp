@@ -1,7 +1,3 @@
-/*
- * tool_sat_mgr.cpp - Satellite Manager panel
- */
-
 #include "tools.h"
 #include "tools_common.h"
 #include "tools_registry.h"
@@ -12,6 +8,7 @@
 #include "core/config.h"
 #include "data/storage.h"
 #include "data/ephem.h"
+#include "util/log.h"
 
 #include <cstdio>
 #include <cstring>
@@ -163,8 +160,7 @@ void DrawPanelSatMgr(UIContext *ctx, AppConfig *cfg)
 
     ImGui::Separator();
 
-    /* cap the list at ~1/4 of the sidebar height so a huge catalogue
-     * doesn't take over the whole sidebar */
+    /* cap the list at ~1/4 of the sidebar height so a huge catalogue doesn't take over the sidebar */
     float sidebar_h = ImGui::GetIO().DisplaySize.y - ImGui::GetFrameHeight();
     float max_list_h = sidebar_h * 0.25f;
     float row_h = 20.0f + ImGui::GetStyle().ItemSpacing.y;
@@ -173,8 +169,7 @@ void DrawPanelSatMgr(UIContext *ctx, AppConfig *cfg)
     float list_h = fminf(fminf(content_h, max_list_h), avail_h);
     ImGui::BeginChild("##SatList", ImVec2(0.0f, list_h));
 
-    /* build the display order: favorites first, preserving insertion order
-     * within each group, so starred sats always sit at the top of the list */
+    /* display order: favorites first, insertion order within each group */
     std::vector<int> order;
     order.reserve(sat_count);
     for (int pass = 0; pass < 2; pass++)
@@ -259,6 +254,9 @@ void DrawPanelSatMgr(UIContext *ctx, AppConfig *cfg)
                 /* persist the selection immediately so it survives a crash/kill */
                 SaveSatSelection(cfg);
                 SaveAppConfig("settings.json", cfg);
+                LOG_INFO("Satellite %s: %s",
+                         satellites[i].is_active ? "activated" : "deactivated",
+                         satellites[i].name);
             }
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip(satellites[i].is_active ? "Deactivate satellite"
@@ -282,10 +280,12 @@ void DrawPanelSatMgr(UIContext *ctx, AppConfig *cfg)
                 if (*ctx->selected_sat == &satellites[i])
                 {
                     *ctx->selected_sat = NULL;
+                    LOG_DEBUG("Satellite deselected: %s", satellites[i].name);
                 }
                 else
                 {
                     *ctx->selected_sat = &satellites[i];
+                    LOG_INFO("Satellite selected: %s", satellites[i].name);
                     if (SatIsEphem(&satellites[i]))
                     {
                         SatMgrEphemSelectWarp(ctx, &satellites[i]);
