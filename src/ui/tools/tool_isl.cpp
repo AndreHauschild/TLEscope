@@ -46,16 +46,22 @@
 
 /* Data structures */
 
-struct LinkPair
+class LinkPair
 {
+public:
     unsigned int norad1;
     unsigned int norad2;
+    LinkPair() = default;
+    LinkPair(unsigned int a, unsigned int b) : norad1(a), norad2(b) {}
 };
 
-struct LinkEpoch
+class LinkEpoch
 {
+public:
     double epoch;
     std::vector<LinkPair> links;
+    LinkEpoch() = default;
+    explicit LinkEpoch(double e) : epoch(e) {}
 };
 
 /* Link schedule: a list of ISL links ordered by epoch */
