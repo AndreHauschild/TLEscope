@@ -9,39 +9,24 @@
 #include "IconsFontAwesome6.h"
 #include "FA6FreeSolidFontData.h"
 
-/* ------------------------------------------------------------------ */
-/* helpers                                                             */
-/* ------------------------------------------------------------------ */
+/* helpers */
 static float s_ui_scale = 1.0f;
 
 float UIScale(void) { return s_ui_scale; }
 float UIDeviceScale(void) { return ThemeDevicePixelScale(); }
 float UIPx(float logical) { return logical * s_ui_scale; }
 
-/* ------------------------------------------------------------------ */
-/* apply colours + style                                               */
-/* ------------------------------------------------------------------ */
+/* apply colours + style */
 
 void ThemeApplyToImGui(const Theme *t, float ui_scale)
 {
     ImGuiStyle &style = ImGui::GetStyle();
     ImGuiIO &io = ImGui::GetIO();
 
-    /* ui_scale can change at runtime (settings slider / +/- keys) and
-     * ThemeApplyToImGui may be re-invoked on theme switches, so scaling
-     * must be idempotent. Reset to pristine defaults first (the theme
-     * re-applies every colour/style var below), then scale once with the
-     * new factor. This avoids ScaleAllSizes() accumulating across calls:
-     * its truncation would otherwise ratchet sizes downward on every
-     * undo/redo round-trip, eventually driving WindowMinSize below 1.0
-     * and tripping ImGui's NewFrame() assertion. */
+    /* reset to pristine defaults first: ScaleAllSizes() would otherwise ratchet sizes down across re-applies */
     style = ImGuiStyle();
 
-    /* ── colour palette ──────────────────────────────────────────────
-     * The full ImGuiCol_* set is derived from the compact theme palette.
-     * Interactive states are mixed from a base color toward the theme's
-     * text color, so a single rule produces readable hover/active shades
-     * on both dark and light themes. */
+    /* ImGuiCol_* set derived from the theme palette; interactive states mixed toward text color */
     const Color text = t->ui.text;
     const Color bg = t->ui.bg;
     const Color surface = t->ui.surface;
@@ -149,9 +134,7 @@ void ThemeApplyToImGui(const Theme *t, float ui_scale)
     LOG_DEBUG("ImGui theme applied (scale=%.2f, dpi=%.2f)", (double)ui_scale, (double)dpi);
 }
 
-/* ------------------------------------------------------------------ */
-/* font atlas rebuild                                                  */
-/* ------------------------------------------------------------------ */
+/* font atlas rebuild */
 
 float ThemeDevicePixelScale(void)
 {
@@ -198,7 +181,16 @@ void ThemeRebuildImGuiFonts(const Theme *t, float ui_scale)
     font_cfg.OversampleH = 2;
     font_cfg.OversampleV = 1;
     font_cfg.RasterizerDensity = 1.0f;
-    io.Fonts->AddFontFromFileTTF(font_path, font_px, &font_cfg, NULL);
+    /* main font: default Latin plus box-drawing/block glyphs for the log banner */
+    static ImVector<ImWchar> main_ranges;
+    {
+        ImFontGlyphRangesBuilder builder;
+        builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
+        static const ImWchar banner_ranges[] = { 0x2500, 0x257F, 0x2580, 0x259F, 0 };
+        builder.AddRanges(banner_ranges);
+        builder.BuildRanges(&main_ranges);
+    }
+    io.Fonts->AddFontFromFileTTF(font_path, font_px, &font_cfg, main_ranges.Data);
 
     /* merge FontAwesome icons */
 
@@ -231,7 +223,7 @@ void ThemeRebuildImGuiFonts(const Theme *t, float ui_scale)
 
     Image img = { pixels, width, height, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
     s_font_tex = LoadTextureFromImage(img);
-    /* img pixels are owned by ImGui atlas — do NOT unload */
+    /* img pixels are owned by ImGui atlas; do NOT unload */
 
     // bilinear filtering
     SetTextureFilter(s_font_tex, TEXTURE_FILTER_BILINEAR);

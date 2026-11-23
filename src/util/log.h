@@ -1,11 +1,6 @@
 #ifndef LOG_H
 #define LOG_H
 
-/**
- * @file log.h
- * @brief Ring-buffer logging with printf-style macros
- */
-
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -14,8 +9,7 @@ extern "C" {
 #endif
 
 /* -- Log levels ------------------------------------------------------------ */
-/* NOTE: values are prefixed with LOG_LEVEL_ to avoid conflicts with
- * raylib's TraceLogLevel enum (LOG_DEBUG, LOG_INFO, LOG_WARN, LOG_ERROR). */
+/* LOG_LEVEL_ prefix avoids conflicts with raylib's TraceLogLevel enum. */
 typedef enum {
     LOG_LEVEL_DEBUG,
     LOG_LEVEL_INFO,
@@ -50,21 +44,32 @@ void LogMessage(LogLevel level, const char *format, ...);
 #define LOG_WARN(...)   LogMessage(LOG_LEVEL_WARN,  __VA_ARGS__)
 #define LOG_ERROR(...)  LogMessage(LOG_LEVEL_ERROR, __VA_ARGS__)
 
+// write ansi to cli and ascii to log
+void LogBanner(const char *text, const char *fallback);
+
 /** clear all log entries */
 void LogClear(void);
 
-/** lock the log buffer for reading; returns pointer to entries array and count.
- *  Must be paired with LogUnlock(). The entries are in ring order; use
- *  LogLock()'s out_count to know how many are valid. */
+/** lock log buffer for reading; must be paired with LogUnlock(). */
 const LogEntry *LogLock(int *out_count);
 
 /** unlock the log buffer after reading */
 void LogUnlock(void);
 
-/** get the ring-buffer head index (next write position).
- *  Used together with LogLock() to read entries in chronological order:
- *  the oldest entry is at (head - count + capacity) % capacity. */
+/** ring-buffer head index; oldest entry is at (head - count + capacity) % capacity. */
 int LogGetHeadIndex(void);
+
+/** configure file logging; path is copied, file_level 0 disables, max_bytes triggers auto-trim */
+void LogConfigureFile(const char *path, int file_level, size_t max_bytes);
+
+/** change the file log level at runtime (0=Off, 1=Debug, 2=Info, 3=Warn, 4=Error) */
+void LogSetFileLevel(int file_level);
+
+/** change the file auto-trim threshold at runtime */
+void LogSetFileMaxBytes(size_t max_bytes);
+
+/** resolved log file path, or "" when file logging is unconfigured */
+const char *LogGetFilePath(void);
 
 #ifdef __cplusplus
 }

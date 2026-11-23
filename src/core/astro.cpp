@@ -4,6 +4,7 @@
 #include "astro_constants.h"
 #include "location.h"
 #include "data/storage.h"
+#include "data/ephem.h"
 
 #include <math.h>
 #include "util/log.h"
@@ -159,6 +160,31 @@ double get_unix_from_epoch(double epoch)
 
     double unix_days = (year - 1970) * 365.0 + leaps + (day - 1.0);
     return unix_days * 86400.0;
+}
+
+/** inverse of get_unix_from_epoch(): unix seconds -> year*1000 + fractional day-of-year */
+double get_epoch_from_unix(double t_unix)
+{
+    /* rough year estimate, then correct against the exact year boundaries */
+    int year = 1970 + (int)floor((t_unix / 86400.0) / 365.2425);
+    for (int iter = 0; iter < 8; iter++)
+    {
+        double jan1 = get_unix_from_epoch((double)year * 1000.0 + 1.0);
+        double next_jan1 = get_unix_from_epoch((double)(year + 1) * 1000.0 + 1.0);
+        if (t_unix < jan1)
+        {
+            year--;
+            continue;
+        }
+        if (t_unix >= next_jan1)
+        {
+            year++;
+            continue;
+        }
+        return (double)year * 1000.0 + (t_unix - jan1) / 86400.0 + 1.0;
+    }
+    double jan1 = get_unix_from_epoch((double)year * 1000.0 + 1.0);
+    return (double)year * 1000.0 + (t_unix - jan1) / 86400.0 + 1.0;
 }
 
 /** sidereal time keeps the earth spinning under the satellites; without this everything is static */
@@ -360,6 +386,8 @@ void load_orbital_data(const char *filename)
         for (int i = 0; i < sat_count; i++)
         {
             Satellite *sat = &satellites[i];
+            if (sat->kind == SAT_KIND_EPHEM)
+                continue; /* tabulated ephemeris: no SGP4 state to build */
             if (!sat_prop_init(sat))
             {
                 LOG_WARN("SGP4 re-init failed for %s - deactivating", sat->name);
@@ -383,6 +411,8 @@ void load_orbital_data_from_string(const char *json)
         for (int i = 0; i < sat_count; i++)
         {
             Satellite *sat = &satellites[i];
+            if (sat->kind == SAT_KIND_EPHEM)
+                continue; /* tabulated ephemeris: no SGP4 state to build */
             if (!sat_prop_init(sat))
             {
                 LOG_WARN("SGP4 re-init failed for %s - deactivating", sat->name);
@@ -430,15 +460,42 @@ void load_manual_entries(AppConfig *config)
     }
 }
 
+/* drawable-path predicate: SGP4 needs a positive mean motion, ephem needs a live mission */
+bool SatHasTracks(const Satellite *sat)
+{
+    if (!sat)
+        return false;
+    if (sat->kind == SAT_KIND_EPHEM)
+        return EphemGetById(sat->ephem_id) != NULL;
+    return sat->mean_motion > 0.0;
+}
+
 // thin wrapper over the cheap propagator (kept for API stability)
 Vector3 calculate_position(Satellite *sat, double current_unix)
 {
+    if (sat && sat->kind == SAT_KIND_EPHEM)
+    {
+        EphemMission *m = EphemGetById(sat->ephem_id);
+        Vector3 p = {0}, v = {0};
+        if (EphemInterp(m, current_unix, &p, &v))
+            return p;
+        // same invalid sentinel as the SGP4 path
+        return (Vector3){NAN, NAN, NAN};
+    }
     return sat_prop_position(sat, current_unix);
 }
 
 // analytic ECI velocity (km/s, app axis convention)
 Vector3 calculate_velocity(Satellite *sat, double current_unix)
 {
+    if (sat && sat->kind == SAT_KIND_EPHEM)
+    {
+        EphemMission *m = EphemGetById(sat->ephem_id);
+        Vector3 p = {0}, v = {0};
+        if (EphemInterp(m, current_unix, &p, &v))
+            return v;
+        return (Vector3){NAN, NAN, NAN};
+    }
     return sat_prop_velocity(sat, current_unix);
 }
 
@@ -470,10 +527,25 @@ void get_apsis_2d(Satellite *sat, double current_time, bool is_apoapsis, double 
 {
     (void)gmst_deg;
 
+    // NaN is this file's invalid-state sentinel: a mission has no Keplerian apsis
+    if (SatIsEphem(sat))
+    {
+        out->x = NAN;
+        out->y = NAN;
+        return;
+    }
+
     double current_unix = get_unix_from_epoch(current_time);
     SatPropElements el;
     sat_prop_elements(sat, current_unix, &el);
     double n = (el.mean_motion > 0.0) ? el.mean_motion : sat->mean_motion * 60.0; // rad/min
+    if (!(n > 0.0))
+    {
+        // no usable mean motion: same no-apsis sentinel
+        out->x = NAN;
+        out->y = NAN;
+        return;
+    }
 
     double M = fmod(el.mean_anom, 2.0 * PI);
     if (M < 0)
@@ -511,10 +583,25 @@ double calc_perigee_km(const Satellite *sat, double current_unix)
 // timestamps of the next perigee and apoapsis
 void get_apsis_times(Satellite *sat, double current_time, double *out_peri_unix, double *out_apo_unix)
 {
+    // NaN is the same invalid-output sentinel calculate_position() uses
+    if (SatIsEphem(sat))
+    {
+        *out_peri_unix = NAN;
+        *out_apo_unix = NAN;
+        return;
+    }
+
     double current_unix = get_unix_from_epoch(current_time);
     SatPropElements el;
     sat_prop_elements(sat, current_unix, &el);
     double n = (el.mean_motion > 0.0) ? el.mean_motion : sat->mean_motion * 60.0; // rad/min
+    if (!(n > 0.0))
+    {
+        /* degenerate elements (no usable mean motion): same no-apsis sentinel */
+        *out_peri_unix = NAN;
+        *out_apo_unix = NAN;
+        return;
+    }
 
     double M = fmod(el.mean_anom, 2.0 * PI);
     if (M < 0)
@@ -529,6 +616,22 @@ void get_apsis_times(Satellite *sat, double current_time, double *out_peri_unix,
 
     *out_peri_unix = current_unix + (diff_peri / n) * 60.0;
     *out_apo_unix = current_unix + (diff_apo / n) * 60.0;
+}
+
+/* local orbital period from a stored state (vis-viva); 0 when unbound/unknown */
+double ephem_period_seconds(const EphemMission *m)
+{
+    if (!m || m->s.empty())
+        return 0.0;
+    const EphemSample &s = m->s[m->s.size() / 2];
+    const double r  = Vector3Length(s.p);
+    const double v2 = Vector3LengthSqr(s.v);
+    if (!(r > 0.0) || !(v2 > 0.0))
+        return 0.0;
+    const double a = 1.0 / (2.0 / r - v2 / (double)MU);
+    if (!(a > 0.0))
+        return 0.0;
+    return 2.0 * PI * sqrt(a * a * a / (double)MU);
 }
 
 /** calculates cache resolution based on orbital eccentricity */
@@ -546,7 +649,11 @@ bool is_orbit_cache_valid(Satellite *sat, Vector3 current_pos, float drift_thres
 {
     if (!sat->orbit_cached)
         return false;
-    
+
+    /* ephem window follows "now": refresh on the round-robin pass */
+    if (sat->kind == SAT_KIND_EPHEM)
+        return false;
+
     float drift = Vector3Distance(sat->cached_orbit_base_pos, current_pos);
     return drift < drift_threshold_km;
 }
@@ -620,9 +727,63 @@ void orbit_adaptive_sample_times(const Satellite *sat, double start_epoch, int n
     }
 }
 
+/* orbits to bake around "now" for a tabulated mission (no config access in this TU) */
+#define EPHEM_DRAW_ORBITS 3.0
+
 /** bakes the future orbital path into a vertex buffer so sgp4 isnt re-run every frame */
 void update_orbit_cache(Satellite *sat, double current_epoch)
 {
+    if (sat->kind == SAT_KIND_EPHEM)
+    {
+        EphemMission *m = EphemGetById(sat->ephem_id);
+        if (!m)
+        {
+            sat->orbit_cached = false;
+            sat->orbit_cache_resolution = 0;
+            return;
+        }
+        const int res = ORBIT_CACHE_SIZE;
+        const double now_unix = get_unix_from_epoch(current_epoch);
+
+        /* window = a few orbits around "now", clamped to the mission */
+        double period = ephem_period_seconds(m);
+        if (!(period > 0.0))
+            period = (m->t1_unix - m->t0_unix) / 40.0;
+        const double half = 0.5 * (double)EPHEM_DRAW_ORBITS * period;
+
+        double t_start = fmax(m->t0_unix, now_unix - half);
+        double t_end   = fmin(m->t1_unix, now_unix + half);
+        if (!(t_end > t_start))
+        {
+            t_start = m->t0_unix;
+            t_end   = m->t1_unix;
+        }
+        const double span = t_end - t_start;
+
+        for (int i = 0; i < res; i++)
+        {
+            const double t = t_start + span * (double)i / (double)(res - 1);
+            Vector3 p = {0}, v = {0};
+            if (!EphemInterp(m, t, &p, &v))
+                p = (Vector3){0};
+            /* Bake body-relative geometry: pos_rel(t) = pos_geo(t) - off(t). */
+            if (m->ref_body != REF_BODY_EARTH)
+            {
+                Vector3 off_km;
+                if (reference_body_offset_km(m->ref_body, t, &off_km))
+                    p = Vector3Subtract(p, off_km);
+            }
+            sat->orbit_cache[i] = Vector3Scale(p, 1.0f / DRAW_SCALE);
+            sat->orbit_cache_phase[i] = (float)((t - now_unix) / period);
+        }
+
+        sat->orbit_cache_resolution = res;
+        sat->cached_orbit_base_pos = calculate_position(sat, get_unix_from_epoch(current_epoch));
+        sat->cached_orbit_epoch = current_epoch;
+        sat->orbit_cached = true;
+        return;
+    }
+
     int new_res = calculate_orbit_cache_resolution(sat->eccentricity);
     if (new_res != sat->orbit_cache_resolution)
     {
@@ -706,6 +867,10 @@ static void CalculatePassesForSat(Satellite *current_sat, double start_epoch, do
 {
     Location *home = GetHomeLocation();
     if (!home || !current_sat || !current_sat->is_active)
+        return;
+
+    /* pass prediction is driven by mean_motion; ephem missions have no elements to scan */
+    if (current_sat->kind == SAT_KIND_EPHEM)
         return;
 
     /* prediction window from the configurable time span (ROADMAP 12.3) */
@@ -1146,6 +1311,18 @@ double local_fields_to_epoch(int year, int day, int hour, int min, int sec)
     return (utc->tm_year + 1900) * 1000.0 + (utc->tm_yday + 1) + day_fraction;
 }
 
+// Sun's mean anomaly (degrees, 0..360), shared by the direction/distance models
+static double sun_mean_anomaly_deg(double current_time_days)
+{
+    double unix_time = get_unix_from_epoch(current_time_days);
+    double jd = (unix_time / 86400.0) + 2440587.5;
+    double n = jd - 2451545.0;
+    double g = fmod(357.528 + 0.9856003 * n, 360.0);
+    if (g < 0)
+        g += 360.0;
+    return g;
+}
+
 // simplified sun position in ECI, validated against known ephemeris
 Vector3 calculate_sun_position(double current_time_days)
 {
@@ -1157,9 +1334,7 @@ Vector3 calculate_sun_position(double current_time_days)
     if (L < 0)
         L += 360.0;
 
-    double g = fmod(357.528 + 0.9856003 * n, 360.0);
-    if (g < 0)
-        g += 360.0;
+    double g = sun_mean_anomaly_deg(current_time_days);
 
     double lambda = L + 1.915 * sin(g * DEG2RAD) + 0.020 * sin(2.0 * g * DEG2RAD);
     double epsilon = 23.439 - 0.0000004 * n;
@@ -1178,6 +1353,18 @@ Vector3 calculate_sun_position(double current_time_days)
     pos.z = (float)(-y_eci);
 
     return Vector3Normalize(pos);
+}
+
+// Low-precision solar-radius series, accurate to ~1e-5 AU:
+// R_AU = 1.00014 - 0.01671*cos(g) - 0.00014*cos(2g), g in degrees.
+double calculate_sun_distance_km(double current_time_days)
+{
+    const double AU_KM = 149597870.7;
+    double g = sun_mean_anomaly_deg(current_time_days) * DEG2RAD;
+    double r_au = 1.00014 - 0.01671 * cos(g) - 0.00014 * cos(2.0 * g);
+    if (!isfinite(r_au) || r_au <= 0.0)
+        r_au = 1.0; /* degenerate guard: fall back to 1 AU */
+    return r_au * AU_KM;
 }
 
 /** basic shadow-cone check; tells us if the satellite is in the dark (no visual/solar power) */
@@ -1237,6 +1424,42 @@ Vector3 calculate_moon_position(double current_time_days)
     return pos;
 }
 
+/* Reference-body position relative to Earth at t_unix (km); Earth yields zero. */
+bool reference_body_offset_km(int ref_body, double t_unix, Vector3 *out_km)
+{
+    if (out_km)
+        *out_km = Vector3Zero();
+    if (ref_body == REF_BODY_EARTH)
+        return true;
+    if (!out_km || !isfinite(t_unix))
+        return false;
+
+    const double t_epoch = get_epoch_from_unix(t_unix);
+    if (!isfinite(t_epoch))
+        return false;
+
+    if (ref_body == REF_BODY_MOON)
+    {
+        Vector3 moon_km = calculate_moon_position(t_epoch);
+        if (!isfinite(moon_km.x) || !isfinite(moon_km.y) || !isfinite(moon_km.z))
+            return false;
+        *out_km = moon_km;
+        return true;
+    }
+
+    Vector3 dir = calculate_sun_position(t_epoch);
+    if (!isfinite(dir.x) || !isfinite(dir.y) || !isfinite(dir.z) ||
+        Vector3LengthSqr(dir) < 1e-12f)
+        return false;
+
+    const double dist_km = calculate_sun_distance_km(t_epoch);
+    if (!isfinite(dist_km) || dist_km <= 0.0)
+        return false;
+
+    *out_km = Vector3Scale(Vector3Normalize(dir), (float)dist_km);
+    return isfinite(out_km->x) && isfinite(out_km->y) && isfinite(out_km->z);
+}
+
 /* samples the geocentric lunar orbit */
 void calculate_moon_orbit(double current_epoch, Vector3 *out_km, int count)
 {
@@ -1254,6 +1477,26 @@ void calculate_moon_orbit(double current_epoch, Vector3 *out_km, int count)
     {
         float f = (float)i / (float)count;
         out_km[i] = Vector3Subtract(out_km[i], Vector3Scale(err, f));
+    }
+}
+
+void calculate_earth_orbit(double current_epoch, Vector3 *out_km, int count)
+{
+    if (!out_km || count <= 0)
+        return;
+
+    const float dist_km = (float)calculate_sun_distance_km(current_epoch);
+    if (!isfinite(dist_km) || dist_km <= 0.0f)
+        return;
+
+    /* Sun's geocentric position (the orbit centre) at the current epoch */
+    const Vector3 sun_now = Vector3Scale(calculate_sun_position(current_epoch), dist_km);
+
+    const double step = EARTH_ORBIT_PERIOD_DAYS / (double)count;
+    for (int i = 0; i < count; i++)
+    {
+        Vector3 dir = calculate_sun_position(current_epoch + i * step);
+        out_km[i] = Vector3Subtract(sun_now, Vector3Scale(dir, dist_km));
     }
 }
 

@@ -1,12 +1,10 @@
 #ifndef ASTRO_H
 #define ASTRO_H
 
-/**
- * @file astro.h
- * @brief Orbital mechanics, pass prediction, and coordinate transforms
- */
+// Orbital mechanics, pass prediction and coordinate transforms.
 
 #include "types.h"
+#include "data/ephem.h"
 
 #define MAX_PASSES 1000
 typedef struct SatPass
@@ -24,7 +22,7 @@ extern SatPass passes[MAX_PASSES];
 extern int num_passes;
 extern Satellite *last_pass_calc_sat;
 
-/* pass prediction settings (ROADMAP 12.3) — defaults applied by CalculatePasses */
+/* pass prediction settings (ROADMAP 12.3); defaults applied by CalculatePasses */
 extern float pass_min_elev;        /* minimum elevation (deg) for a pass to count */
 extern float pass_time_span_hours; /* prediction window in hours (default 24) */
 
@@ -66,20 +64,37 @@ bool add_satellite_from_omm_elements_to(Satellite *sats, int *count,
 
 double normalize_epoch(double epoch);
 double get_unix_from_epoch(double epoch);
+/* inverse of get_unix_from_epoch(): unix seconds -> year*1000 + fractional day-of-year */
+double get_epoch_from_unix(double t_unix);
 
 // orbit math stuff
 Vector3 calculate_sun_position(double current_time_days);
+// Earth->Sun distance in km; calculate_sun_position() returns a normalised direction.
+double calculate_sun_distance_km(double current_time_days);
 bool is_sat_eclipsed(Vector3 pos_km, Vector3 sun_dir_norm);
 void get_map_coordinates(Vector3 pos, double gmst_deg, float earth_offset, float map_w, float map_h,
                          float *out_x, float *out_y);
 Vector3 calculate_position(Satellite *sat, double current_unix);
 Vector3 calculate_velocity(Satellite *sat, double current_unix);
+
+/* true for tabulated ephemeris missions (JPL Horizons VECTORS) */
+static inline bool SatIsEphem(const Satellite *sat)
+{
+    return sat != NULL && sat->kind == SAT_KIND_EPHEM;
+}
+
+// SGP4 needs a positive mean motion; ephem missions need a live registry entry.
+bool SatHasTracks(const Satellite *sat);
 Vector3 calculate_moon_position(double current_time_days);
 
 /* geocentric lunar orbit sampling (one sidereal month) */
 #define MOON_ORBIT_SAMPLES 256
 #define MOON_SIDEREAL_PERIOD_DAYS 27.321661
 void calculate_moon_orbit(double current_epoch, Vector3 *out_km, int count);
+
+#define EARTH_ORBIT_SAMPLES 256
+#define EARTH_ORBIT_PERIOD_DAYS 365.256363
+void calculate_earth_orbit(double current_epoch, Vector3 *out_km, int count);
 void get_apsis_2d(Satellite *sat, double current_time, bool is_apoapsis, double gmst_deg, float earth_offset,
                   float map_w, float map_h, Vector2 *out);
 void get_apsis_times(Satellite *sat, double current_time, double *out_peri_unix, double *out_apo_unix);
@@ -107,6 +122,10 @@ double local_fields_to_epoch(int year, int day, int hour, int min, int sec);
 void update_orbit_cache(Satellite *sat, double current_epoch);
 bool is_orbit_cache_valid(Satellite *sat, Vector3 current_pos, float drift_threshold_km);
 int calculate_orbit_cache_resolution(double eccentricity);
+
+double ephem_period_seconds(const EphemMission *m);
+
+bool reference_body_offset_km(int ref_body, double t_unix, Vector3 *out_km);
 
 /* fills out_times[0..n-1] with adaptive sample epochs (days), uniform in eccentric anomaly */
 void orbit_adaptive_sample_times(const Satellite *sat, double start_epoch, int n,

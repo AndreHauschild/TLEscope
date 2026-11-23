@@ -1,18 +1,20 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-#include "types.h"
+#define CONFIG_SCHEMA_VERSION 1
 
-/**
- * @file config.h
- * @brief Application configuration load/save
- */
+#include "types.h"
 
 /** load settings from a JSON file into the config struct */
 void LoadAppConfig(const char *filename, AppConfig *config);
 
 /** save the current config to a JSON file */
 void SaveAppConfig(const char *filename, AppConfig *config);
+
+int GetLegacyReferenceBodyDefault(void);
+
+/** true when the last LoadAppConfig reset an incompatible config to defaults */
+bool AppConfigWasReset(void);
 
 // anchor filename to the exe dir, absolute paths pass through
 // returns a rotating static buffer, copy it to keep it

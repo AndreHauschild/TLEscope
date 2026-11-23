@@ -46,6 +46,50 @@ const char *AppConfigPath(const char *name)
     return out;
 }
 
+/* legacy global reference body, captured on load for one-time mission migration */
+static int g_legacy_reference_body_default = 0;
+
+int GetLegacyReferenceBodyDefault(void)
+{
+    return g_legacy_reference_body_default;
+}
+
+static bool g_config_was_reset = false;
+
+bool AppConfigWasReset(void)
+{
+    return g_config_was_reset;
+}
+
+/* best-effort backup; never aborts startup */
+static bool BackupConfigFile(const char *resolved_path)
+{
+    if (!resolved_path || !FileExists(resolved_path))
+        return false;
+
+    char backup_path[1088];
+    snprintf(backup_path, sizeof(backup_path), "%s.bak", resolved_path);
+
+    char *text = LoadFileText(resolved_path);
+    if (!text)
+    {
+        LOG_ERROR("Config backup failed: could not read %s", resolved_path);
+        return false;
+    }
+
+    bool ok = SaveFileText(backup_path, text);
+    UnloadFileText(text);
+
+    if (!ok)
+    {
+        LOG_ERROR("Config backup failed: could not write %s", backup_path);
+        return false;
+    }
+
+    LOG_INFO("Config backed up to %s", backup_path);
+    return true;
+}
+
 // read the json file and grab our settings
 void LoadAppConfig(const char *filename, AppConfig *config)
 {
@@ -55,27 +99,32 @@ void LoadAppConfig(const char *filename, AppConfig *config)
 
     // default theme configuration
     strcpy(config->theme, "default");
-    config->show_markers = true;      // default
-    config->show_statistics = false;  // default
-    config->limit_map_zoomout = true;  // default: cap 2D map zoom-out at the viewport fill level
-    config->highlight_sunlit = false; // default
-    config->show_slant_range = false; // default
-    config->show_scattering = true;   // default (Aesthetic profile)
-    config->show_skybox = true;       // default
-    config->show_sun = true;          // default
-    config->show_sun_flare = true;    // default
-    config->show_ecliptic_frame = false; // default
-    config->show_ground_coverage = true; // default
-    config->show_apsides = true;      // default
-    config->show_earth_texture = true;  // default
-    config->show_latlon_grid = true;    // default
-    config->show_country_borders = true;  // default
-    config->show_coast_lines = true;   // default
-    config->show_tutorial = false;   // default: first-boot tutorial not pending
-    config->hint_vsync = true;       // default
-    config->use_local_time = true;   // default: display in system local timezone
-    config->night_mode = false;      // default: full-screen red post-process off
-    config->first_day_of_week = 1;   // default: Monday first in the date-picker calendar
+    config->show_markers = true;      
+    config->show_statistics = false;  
+    config->show_support_button = true;  
+    config->limit_map_zoomout = true;
+    config->camera_smoothing_2d = false;
+    config->camera_smoothing_3d = true;
+    config->highlight_sunlit = false;
+    config->show_slant_range = false;
+    config->show_scattering = true;
+    config->show_skybox = true;       
+    config->show_sun = true;          
+    config->show_sun_flare = true;    
+    config->show_sun_anamorphic = false; // default: opt-in
+    config->show_ecliptic_frame = false; 
+    config->show_ground_coverage = true; 
+    config->show_apsides = true;      
+    config->show_earth_texture = true;  
+    config->show_latlon_grid = true;    
+    config->show_country_borders = true;  
+    config->show_coast_lines = true;   
+    config->show_tutorial = false;
+    config->hint_vsync = true;       
+    config->use_local_time = true;
+    config->night_mode = false;
+    config->discord_rpc_enabled = true;
+    config->first_day_of_week = 1;
     config->custom_data_source_count = 0;
     config->retlector_group_count = 0;
     config->retlector_groups_fetched = false;
@@ -84,6 +133,8 @@ void LoadAppConfig(const char *filename, AppConfig *config)
     config->auto_repull_stale = false;
     config->network_timeout_seconds = 45;
     config->max_satellites = DEFAULT_MAX_SATELLITES;
+    config->file_log_level = 2;
+    config->log_file_max_kb = 500;
     config->prop_use_short_period = true;
     config->active_sat_count = 0;
     config->has_saved_selection = false;
@@ -160,19 +211,45 @@ void LoadAppConfig(const char *filename, AppConfig *config)
         }
     }
 
+    bool need_first_run = false;
+
     if (FileExists(filename))
     {
         LOG_INFO("Loading config from %s", filename);
         char *text = LoadFileText(filename);
+        bool incompatible = false;
+        const char *incompat_reason = NULL;
         if (text)
         {
             nlohmann::json root = nlohmann::json::object();
+            bool parsed = true;
             try
             {
                 root = nlohmann::json::parse(text);
             }
             catch (const std::exception &)
             {
+                parsed = false;
+            }
+
+            if (!parsed)
+            {
+                incompatible = true;
+                incompat_reason = "JSON parse error";
+                UnloadFileText(text);
+                text = NULL;
+            }
+            else if (!root.is_object())
+            {
+                incompatible = true;
+                incompat_reason = "root is not a JSON object";
+                UnloadFileText(text);
+                text = NULL;
+            }
+            else if (root.value("config_version", 0) != CONFIG_SCHEMA_VERSION)
+            {
+                incompatible = true;
+                incompat_reason = "config_version mismatch";
                 UnloadFileText(text);
                 text = NULL;
             }
@@ -227,6 +304,12 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                     config->max_satellites = get_int("max_satellites", config->max_satellites);
                     if (config->max_satellites < MIN_MAX_SATELLITES) config->max_satellites = MIN_MAX_SATELLITES;
                     if (config->max_satellites > MAX_MAX_SATELLITES) config->max_satellites = MAX_MAX_SATELLITES;
+                    config->file_log_level = get_int("file_log_level", config->file_log_level);
+                    if (config->file_log_level < 0) config->file_log_level = 0;
+                    if (config->file_log_level > 4) config->file_log_level = 4;
+                    config->log_file_max_kb = get_int("log_file_max_kb", config->log_file_max_kb);
+                    if (config->log_file_max_kb < 16) config->log_file_max_kb = 16;
+                    if (config->log_file_max_kb > 102400) config->log_file_max_kb = 102400;
                     config->first_day_of_week = get_int("first_day_of_week", config->first_day_of_week);
                     config->prop_use_short_period = get_bool("prop_use_short_period", config->prop_use_short_period);
 
@@ -234,13 +317,26 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                     config->show_night_lights = get_bool("show_night_lights", config->show_night_lights);
                     config->show_markers = get_bool("show_markers", config->show_markers);
                     config->show_statistics = get_bool("show_statistics", config->show_statistics);
+                    config->show_support_button = get_bool("show_support_button", config->show_support_button);
                     config->limit_map_zoomout = get_bool("limit_map_zoomout", config->limit_map_zoomout);
+                    config->camera_smoothing_2d = get_bool("camera_smoothing_2d", config->camera_smoothing_2d);
+                    config->camera_smoothing_3d = get_bool("camera_smoothing_3d", config->camera_smoothing_3d);
                     config->highlight_sunlit = get_bool("highlight_sunlit", config->highlight_sunlit);
                     config->show_slant_range = get_bool("show_slant_range", config->show_slant_range);
                     config->show_skybox = get_bool("show_skybox", config->show_skybox);
                     config->show_sun = get_bool("show_sun", config->show_sun);
                     config->show_sun_flare = get_bool("show_sun_flare", config->show_sun_flare);
+                    config->show_sun_anamorphic = get_bool("show_sun_anamorphic", config->show_sun_anamorphic);
                     config->show_ecliptic_frame = get_bool("show_ecliptic_frame", config->show_ecliptic_frame);
+                    /* Reference body is per-mission; capture the legacy global value once. */
+                    {
+                        int legacy_ref = get_int("reference_body", 0);
+                        if (get_bool("show_orbital_reference", false))
+                            legacy_ref = 2; /* legacy Sun-relative flag */
+                        if (legacy_ref < 0 || legacy_ref >= REF_BODY_COUNT)
+                            legacy_ref = 0;
+                        g_legacy_reference_body_default = legacy_ref;
+                    }
                     config->show_ground_coverage = get_bool("show_ground_coverage", config->show_ground_coverage);
                     config->show_apsides = get_bool("show_apsides", config->show_apsides);
                     config->show_earth_texture = get_bool("show_earth_texture", config->show_earth_texture);
@@ -252,6 +348,7 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                     config->show_tutorial = get_bool("show_tutorial", config->show_tutorial);
                     config->use_local_time = get_bool("use_local_time", config->use_local_time);
                     config->night_mode = get_bool("night_mode", config->night_mode);
+                    config->discord_rpc_enabled = get_bool("discord_rpc_enabled", config->discord_rpc_enabled);
 
                     // load manual orbital data entries
                     auto me = root.find("manual_entries");
@@ -662,9 +759,30 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                          config->data_stale_threshold_seconds);
             }
         }
+        else
+        {
+            incompatible = true;
+            incompat_reason = "file could not be read";
+        }
+
+        if (incompatible)
+        {
+            char backup_src[1024];
+            snprintf(backup_src, sizeof(backup_src), "%s", filename);
+            BackupConfigFile(backup_src);
+            LOG_WARN("Config at %s is incompatible (%s); backed up to %s.bak and resetting to defaults",
+                     filename, incompat_reason ? incompat_reason : "unknown", filename);
+            g_config_was_reset = true;
+            need_first_run = true;
+        }
     }
     else {
-        LOG_INFO("No config file found at %s -- showing first-run dialog", filename);
+        need_first_run = true;
+    }
+
+    if (need_first_run)
+    {
+        LOG_INFO("No usable config file at %s -- showing first-run dialog", filename);
         strcpy(config->theme, "default");
         config->window_width = 1920;
         config->window_height = 1080;
@@ -674,9 +792,11 @@ void LoadAppConfig(const char *filename, AppConfig *config)
         config->earth_rotation_offset = 0.00;
         config->orbits_to_draw = 3.00;
         config->show_statistics = false;
+        config->show_support_button = true;
         config->limit_map_zoomout = true;
         config->hint_vsync = true;
         config->night_mode = false;
+        config->discord_rpc_enabled = true;
         config->max_satellites = DEFAULT_MAX_SATELLITES;
         config->prop_use_short_period = true;
         // first run: a single default home location, no forced example marker
@@ -716,6 +836,7 @@ void SaveAppConfig(const char *filename, AppConfig *config)
 
     nlohmann::json root = nlohmann::json::object();
 
+    root["config_version"] = CONFIG_SCHEMA_VERSION;
     root["theme"] = config->theme;
     root["window_width"] = config->window_width;
     root["window_height"] = config->window_height;
@@ -732,13 +853,17 @@ void SaveAppConfig(const char *filename, AppConfig *config)
     root["show_night_lights"] = config->show_night_lights;
     root["show_markers"] = config->show_markers;
     root["show_statistics"] = config->show_statistics;
+    root["show_support_button"] = config->show_support_button;
     root["limit_map_zoomout"] = config->limit_map_zoomout;
+    root["camera_smoothing_2d"] = config->camera_smoothing_2d;
+    root["camera_smoothing_3d"] = config->camera_smoothing_3d;
     root["highlight_sunlit"] = config->highlight_sunlit;
     root["show_slant_range"] = config->show_slant_range;
     root["show_scattering"] = config->show_scattering;
     root["show_skybox"] = config->show_skybox;
     root["show_sun"] = config->show_sun;
     root["show_sun_flare"] = config->show_sun_flare;
+    root["show_sun_anamorphic"] = config->show_sun_anamorphic;
     root["show_ecliptic_frame"] = config->show_ecliptic_frame;
     root["show_ground_coverage"] = config->show_ground_coverage;
     root["show_apsides"] = config->show_apsides;
@@ -750,11 +875,14 @@ void SaveAppConfig(const char *filename, AppConfig *config)
     root["show_tutorial"] = config->show_tutorial;
     root["use_local_time"] = config->use_local_time;
     root["night_mode"] = config->night_mode;
+    root["discord_rpc_enabled"] = config->discord_rpc_enabled;
     root["first_day_of_week"] = config->first_day_of_week;
     root["data_stale_threshold_seconds"] = config->data_stale_threshold_seconds;
     root["auto_repull_stale"] = config->auto_repull_stale;
     root["network_timeout_seconds"] = config->network_timeout_seconds;
     root["max_satellites"] = config->max_satellites;
+    root["file_log_level"] = config->file_log_level;
+    root["log_file_max_kb"] = config->log_file_max_kb;
     root["prop_use_short_period"] = config->prop_use_short_period;
 
     if (config->custom_data_source_count > 0)

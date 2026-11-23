@@ -4,9 +4,7 @@
 #include <raymath.h>
 #include <rlgl.h>
 
-/* The bundled raylib's BeginMode2D resets the modelview without preserving
- * the DPI transform from BeginDrawing. Keep camera coordinates in logical
- * pixels, matching GetWorldToScreen2D, mouse input, and the ImGui overlay. */
+/* bundled raylib's BeginMode2D drops the DPI transform; keep camera coords in logical pixels */
 
 /* Smallest zoom at which the map still covers the whole window. */
 inline float MapFillZoom(float map_w, float map_h)
@@ -41,8 +39,7 @@ inline void Viewport3DSetRect(float x, float y, float w, float h)
     g_view3d_h = h;
 }
 
-/* Inclusive range of horizontally repeated map copies intersecting the scene
- * viewport. This also handles deliberate zoom-out beyond one map width. */
+/* inclusive range of horizontally repeated map copies intersecting the viewport */
 inline void MapVisibleCopyRange(const Camera2D &cam, float map_w, int *first, int *last)
 {
     if (map_w <= 0.0f)
@@ -92,6 +89,35 @@ inline void Viewport3DResetGL(void)
     rlViewport(0, 0, GetRenderWidth(), GetRenderHeight());
 }
 
+// derive clip planes from camera distance; near must not be capped or the depth ratio blows out and the scene goes black
+inline float g_scene_far_extra = 0.0f;
+
+inline float Viewport3DCameraFar(const Camera &cam)
+{
+    const float dist   = Vector3Distance(cam.position, cam.target);
+    const float origin = Vector3Length(cam.position);
+    float far_plane = 4000.0f;
+    if (isfinite(dist) && isfinite(origin))
+        far_plane = fmaxf(fmaxf(4000.0f, dist * 4.0f), origin + 700.0f);
+    if (isfinite(g_scene_far_extra) && g_scene_far_extra > far_plane)
+        far_plane = g_scene_far_extra;
+    return far_plane;
+}
+
+inline float Viewport3DCameraNear(const Camera &cam)
+{
+    const float dist = Vector3Distance(cam.position, cam.target);
+    if (!isfinite(dist))
+        return 0.05f;
+    return fmaxf(dist * 1e-4f, 0.05f);
+}
+
+/** push the adaptive near/far into rlgl; must be called before BeginMode3D */
+inline void Viewport3DApplyClipPlanes(const Camera &cam)
+{
+    rlSetClipPlanes((double)Viewport3DCameraNear(cam), (double)Viewport3DCameraFar(cam));
+}
+
 /** match the projection aspect to the sub-rect so the 3D content is not stretched */
 inline void Viewport3DFixProjection(Camera cam)
 {
@@ -105,6 +131,30 @@ inline void Viewport3DFixProjection(Camera cam)
     rlLoadIdentity();
     rlFrustum(-right, right, -top, top, nearz, farz);
     rlMatrixMode(RL_MODELVIEW);
+}
+
+// Fade markers out as the Earth shrinks to a speck: 1.0 up to 12x its drawn
+// radius, smoothstep to 0.0 at 40x. Non-finite or non-positive inputs return 1.0.
+inline float MarkerZoomAlpha(float cam_distance, float earth_radius)
+{
+    constexpr float FADE_START = 12.0f;
+    constexpr float FADE_END   = 40.0f;
+
+    if (!isfinite(cam_distance) || !isfinite(earth_radius) ||
+        cam_distance <= 0.0f || earth_radius <= 0.0f)
+        return 1.0f;
+
+    const float d0 = FADE_START * earth_radius;
+    const float d1 = FADE_END * earth_radius;
+    if (cam_distance <= d0) return 1.0f;
+    if (cam_distance >= d1) return 0.0f;
+
+    float t = (cam_distance - d0) / (d1 - d0);
+    t = t * t * (3.0f - 2.0f * t);
+    const float a = 1.0f - t;
+    if (a < 0.0f) return 0.0f;
+    if (a > 1.0f) return 1.0f;
+    return a;
 }
 
 /** world -> logical screen coords, offset for the sub-rect */

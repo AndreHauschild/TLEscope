@@ -1,7 +1,3 @@
-/*
- * tool_sat_mgr.cpp - Satellite Manager panel
- */
-
 #include "tools.h"
 #include "tools_common.h"
 #include "tools_registry.h"
@@ -11,6 +7,8 @@
 #include "core/theme.h"
 #include "core/config.h"
 #include "data/storage.h"
+#include "data/ephem.h"
+#include "util/log.h"
 
 #include <cstdio>
 #include <cstring>
@@ -49,6 +47,33 @@ static void DrawStarFilled(ImDrawList *dl, ImVec2 c, float R, ImU32 col)
         dl->PathLineTo(ImVec2(c.x + cosf(ang) * rad, c.y + sinf(ang) * rad));
     }
     dl->PathFillConcave(col);
+}
+
+// If a mission's window excludes the current time, warp to its start; the window
+// re-entry logic then activates it. Inside the window activation is immediate.
+static void SatMgrEphemSelectWarp(UIContext *ctx, Satellite *sat)
+{
+    if (!ctx || !SatIsEphem(sat))
+        return;
+    EphemMission *m = EphemGetById(sat->ephem_id);
+    if (!m)
+        return;
+
+    const double now = ctx->current_epoch ? *ctx->current_epoch : 0.0;
+    const double now_unix = get_unix_from_epoch(now);
+    sat->is_active = true;
+
+    /* inside the window: nothing to warp to, P3 keeps it active as-is */
+    if (now_unix >= m->t0_unix && now_unix <= m->t1_unix)
+        return;
+
+    // a window can be years away, so exempt this jump from MAX_TIME_MULTIPLIER
+    const double target = get_epoch_from_unix(m->t0_unix);
+    *ctx->auto_warp_target = target;
+    *ctx->auto_warp_initial_diff = (target - now) * 86400.0;
+    if (ctx->auto_warp_unbounded)
+        *ctx->auto_warp_unbounded = true;
+    *ctx->is_auto_warping = true;
 }
 
 void DrawPanelSatMgr(UIContext *ctx, AppConfig *cfg)
@@ -135,8 +160,7 @@ void DrawPanelSatMgr(UIContext *ctx, AppConfig *cfg)
 
     ImGui::Separator();
 
-    /* cap the list at ~1/4 of the sidebar height so a huge catalogue
-     * doesn't take over the whole sidebar */
+    /* cap the list at ~1/4 of the sidebar height so a huge catalogue doesn't take over the sidebar */
     float sidebar_h = ImGui::GetIO().DisplaySize.y - ImGui::GetFrameHeight();
     float max_list_h = sidebar_h * 0.25f;
     float row_h = 20.0f + ImGui::GetStyle().ItemSpacing.y;
@@ -145,8 +169,7 @@ void DrawPanelSatMgr(UIContext *ctx, AppConfig *cfg)
     float list_h = fminf(fminf(content_h, max_list_h), avail_h);
     ImGui::BeginChild("##SatList", ImVec2(0.0f, list_h));
 
-    /* build the display order: favorites first, preserving insertion order
-     * within each group, so starred sats always sit at the top of the list */
+    /* display order: favorites first, insertion order within each group */
     std::vector<int> order;
     order.reserve(sat_count);
     for (int pass = 0; pass < 2; pass++)
@@ -225,9 +248,15 @@ void DrawPanelSatMgr(UIContext *ctx, AppConfig *cfg)
             /* checkbox for active state */
             if (ImGui::Checkbox("##active", &satellites[i].is_active))
             {
+                /* activation of a mission outside its window warps to the mission start */
+                if (satellites[i].is_active)
+                    SatMgrEphemSelectWarp(ctx, &satellites[i]);
                 /* persist the selection immediately so it survives a crash/kill */
                 SaveSatSelection(cfg);
                 SaveAppConfig("settings.json", cfg);
+                LOG_INFO("Satellite %s: %s",
+                         satellites[i].is_active ? "activated" : "deactivated",
+                         satellites[i].name);
             }
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip(satellites[i].is_active ? "Deactivate satellite"
@@ -248,7 +277,22 @@ void DrawPanelSatMgr(UIContext *ctx, AppConfig *cfg)
                                   ImGuiSelectableFlags_None, selectable_size))
             {
                 /* clicking the already-selected row toggles the selection off */
-                *ctx->selected_sat = (*ctx->selected_sat == &satellites[i]) ? NULL : &satellites[i];
+                if (*ctx->selected_sat == &satellites[i])
+                {
+                    *ctx->selected_sat = NULL;
+                    LOG_DEBUG("Satellite deselected: %s", satellites[i].name);
+                }
+                else
+                {
+                    *ctx->selected_sat = &satellites[i];
+                    LOG_INFO("Satellite selected: %s", satellites[i].name);
+                    if (SatIsEphem(&satellites[i]))
+                    {
+                        SatMgrEphemSelectWarp(ctx, &satellites[i]);
+                        SaveSatSelection(cfg);
+                        SaveAppConfig("settings.json", cfg);
+                    }
+                }
             }
             if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
             {
@@ -266,6 +310,24 @@ void DrawPanelSatMgr(UIContext *ctx, AppConfig *cfg)
                 /* right tab, flush to the row's right edge, full row height */
                 dl->AddRectFilled(ImVec2(rect_max.x - UIPx(3.0f), rect_min.y),
                                   ImVec2(rect_max.x, rect_max.y), accent_u32);
+            }
+
+            // EPHEM chip: a small dim pill; missions render like any other row otherwise
+            if (SatIsEphem(&satellites[i]))
+            {
+                static const char *kEphemChip = "EPHEM";
+                ImVec2 rect_min = ImGui::GetItemRectMin();
+                ImVec2 rect_max = ImGui::GetItemRectMax();
+                ImVec2 tsz = ImGui::CalcTextSize(kEphemChip);
+                float padx = UIPx(4.0f);
+                float chip_w = tsz.x + padx * 2.0f;
+                ImVec2 cmin(rect_max.x - UIPx(6.0f) - chip_w,
+                            rect_min.y + (rect_max.y - rect_min.y - tsz.y) * 0.5f);
+                ImVec2 cmax(cmin.x + chip_w, cmin.y + tsz.y);
+                ImU32 chip_bg = ImGui::GetColorU32(ThemeColor(ThemeAlpha(g_theme.ui.text_dim, 0.18f)));
+                ImU32 chip_fg = ImGui::GetColorU32(ThemeColor(g_theme.ui.info));
+                dl->AddRectFilled(cmin, cmax, chip_bg, UIPx(3.0f));
+                dl->AddText(ImVec2(cmin.x + padx, cmin.y), chip_fg, kEphemChip);
             }
 
             if (!active)

@@ -1,12 +1,14 @@
 #include "provider.h"
 #include "cache.h"
 #include "storage.h"
+#include "data/spacetrack_api.h"
 #include "util/log.h"
 #ifdef __APPLE__
 #include "util/proxy_macos.h"
 #endif
 #include <fstream>
 #include <iostream>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +16,18 @@
 #include <curl/curl.h>
 #include <chrono>
 #include <thread>
+#include <mutex>
+#include <string>
+#ifdef _WIN32
+// windows.h min/max macros would collide with std::min/std::max in nlohmann/json.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 #include <nlohmann/json.hpp>
 
 #include "ui/notifications.h"
@@ -23,13 +37,7 @@
 
 #define CELESTRAK_BASE "https://celestrak.org/NORAD/elements/gp.php"
 
-// CelesTrak GROUP values are stored directly in DataSource::id.  This keeps
-// the user-visible catalog and the API query in one auditable table instead
-// of relying on a second, position-dependent index-to-group mapping.
-//
-// This list mirrors the ordinary GROUP= datasets advertised on CelesTrak's
-// Current GP Element Sets page.  Special queries such as GPZ/GPZ-PLUS and
-// filtered views such as OLDEST/DOCKED/MOVERS are intentionally not groups.
+// CelesTrak GROUP values are stored directly in DataSource::id; special queries like GPZ are not groups.
 const DataSource CELESTRAK_SOURCES[] = {
     // Special-interest satellites
     {"last-30-days",       "Last 30 Days' Launches",                    CELESTRAK_BASE, PROVIDER_CELESTRAK, FORMAT_OMM_JSON, {0}},
@@ -124,6 +132,23 @@ const DataSource RETLECTOR_SOURCES[] = {
 };
 const int NUM_RETLECTOR_SOURCES = sizeof(RETLECTOR_SOURCES) / sizeof(RETLECTOR_SOURCES[0]);
 
+#define SPACETRACK_BASE "https://www.space-track.org/basicspacedata/query/class/gp"
+
+// DSL slugs only: the predicates live in spacetrack_api.cpp so the DataSource::id[32]
+// stays short (same indirection as retlector_group_for_index).
+const DataSource SPACETRACK_SOURCES[] = {
+    {"active",            "Active Satellites",                      SPACETRACK_BASE, PROVIDER_SPACETRACK, FORMAT_OMM_JSON, {0}},
+    {"last-30-days",      "Last 30 Days' Launches",                 SPACETRACK_BASE, PROVIDER_SPACETRACK, FORMAT_OMM_JSON, {0}},
+    {"stations",          "Space Stations",                         SPACETRACK_BASE, PROVIDER_SPACETRACK, FORMAT_OMM_JSON, {0}},
+    {"starlink",          "Starlink",                               SPACETRACK_BASE, PROVIDER_SPACETRACK, FORMAT_OMM_JSON, {0}},
+    {"oneweb",            "OneWeb",                                 SPACETRACK_BASE, PROVIDER_SPACETRACK, FORMAT_OMM_JSON, {0}},
+    {"gps",               "GPS Operational",                        SPACETRACK_BASE, PROVIDER_SPACETRACK, FORMAT_OMM_JSON, {0}},
+    {"cosmos-2251-debris","COSMOS 2251 Debris",                     SPACETRACK_BASE, PROVIDER_SPACETRACK, FORMAT_OMM_JSON, {0}},
+    {"fengyun-1c-debris", "Chinese ASAT Test Debris (FENGYUN 1C)",  SPACETRACK_BASE, PROVIDER_SPACETRACK, FORMAT_OMM_JSON, {0}},
+    {"analyst",           "Analyst Satellites",                     SPACETRACK_BASE, PROVIDER_SPACETRACK, FORMAT_OMM_JSON, {0}},
+};
+const int NUM_SPACETRACK_SOURCES = sizeof(SPACETRACK_SOURCES) / sizeof(SPACETRACK_SOURCES[0]);
+
 // -- Retlector group name mapping ------------------------------------------
 
 static const char* retlector_group_for_index(int idx)
@@ -184,6 +209,16 @@ static bool retlector_build_url(const DataSource *source, OrbitalDataFormat form
     return true;
 }
 
+// -- Space-Track URL builder ------------------------------------------------
+
+static bool spacetrack_build_url(const DataSource *source, OrbitalDataFormat format,
+                                 char *url, size_t url_size)
+{
+    const char *predicate = SpacetrackPredicateForSlug(source ? source->id : NULL);
+    (void)format;  // Space-Track GP access is JSON-only here; TLE/3LE loses names (see spec section 4.7)
+    return SpacetrackBuildQueryUrl(predicate, url, url_size);
+}
+
 // -- Provider Registry ------------------------------------------------------
 
 static const DataProvider celestrak_provider = {
@@ -196,14 +231,20 @@ static const DataProvider retlector_provider = {
     .build_url = retlector_build_url
 };
 
+static const DataProvider spacetrack_provider = {
+    .name = "Space-Track",
+    .build_url = spacetrack_build_url
+};
+
 const DataProvider* GetProvider(ProviderType type)
 {
     switch (type)
     {
-        case PROVIDER_CELESTRAK: return &celestrak_provider;
-        case PROVIDER_RETLECTOR: return &retlector_provider;
-        case PROVIDER_CUSTOM:    return NULL;  // Custom sources use raw URL
-        default:                 return NULL;
+        case PROVIDER_CELESTRAK:  return &celestrak_provider;
+        case PROVIDER_RETLECTOR:  return &retlector_provider;
+        case PROVIDER_SPACETRACK: return &spacetrack_provider;
+        case PROVIDER_CUSTOM:     return NULL;  // Custom sources use raw URL
+        default:                  return NULL;
     }
 }
 
@@ -261,10 +302,236 @@ static bool reset_memory_buffer(MemoryBuf *chunk)
     return chunk->memory != NULL;
 }
 
-static FetchResult http_fetch(const char *url)
+// libcurl requires curl_global_init() before any other call; call_once makes
+// the lazy init safe from the UI thread and both fetch workers.
+static void ensure_curl_global_init(void)
+{
+    static std::once_flag once;
+    std::call_once(once, [] {
+        const CURLcode rc = curl_global_init(CURL_GLOBAL_DEFAULT);
+        if (rc != CURLE_OK)
+            LOG_ERROR("curl_global_init failed: %s (%d)",
+                      curl_easy_strerror(rc), (int)rc);
+        else
+            LOG_DEBUG("libcurl %s initialised", curl_version());
+    });
+}
+
+// Used only for CA-bundle probing, so fopen() avoids a <filesystem> dependency.
+static bool path_is_file(const std::string &path)
+{
+    if (path.empty()) return false;
+    FILE *f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    fclose(f);
+    return true;
+}
+
+// Portable bundles place data next to the binary; fall back to the CWD.
+static std::string executable_dir(void)
+{
+#ifdef _WIN32
+    char buf[MAX_PATH] = {0};
+    const DWORD n = GetModuleFileNameA(NULL, buf, MAX_PATH);
+    if (n > 0 && n < MAX_PATH)
+    {
+        std::string path(buf, (size_t)n);
+        const size_t slash = path.find_last_of("\\/");
+        if (slash != std::string::npos) return path.substr(0, slash);
+    }
+#endif
+    return std::string(".");
+}
+
+// A static OpenSSL libcurl has no compiled-in trust path, so the Windows build
+// fails the handshake with CURLE_SSL_CACERT without this. Returns "" if none.
+static std::string resolve_ca_bundle(void)
+{
+    const char *const env_names[] = { "CURL_CA_BUNDLE", "SSL_CERT_FILE" };
+    for (const char *name : env_names)
+    {
+        const char *v = getenv(name);
+        if (v && *v && path_is_file(v)) return std::string(v);
+    }
+
+    const char *const file_names[] = {
+        "ca-bundle.crt", "cacert.pem", "curl-ca-bundle.crt", "ca-bundle.pem"
+    };
+    const std::string exe_dir = executable_dir();
+    const std::string dirs[] = { exe_dir, exe_dir + "/themes" };
+    for (const std::string &dir : dirs)
+    {
+        if (dir.empty()) continue;
+        for (const char *name : file_names)
+        {
+            const std::string path = dir + "/" + name;
+            if (path_is_file(path)) return path;
+        }
+    }
+    return std::string();
+}
+
+#ifdef _WIN32
+// libcurl only reads the *_proxy environment variables, never the WinINET
+// setting, so read the current-user proxy here. Returns "" when unset.
+static std::string resolve_windows_system_proxy(const char *url)
+{
+    HKEY key = NULL;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER,
+                      "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+                      0, KEY_READ, &key) != ERROR_SUCCESS)
+        return std::string();
+
+    DWORD enable = 0, enable_size = sizeof(enable), enable_type = 0;
+    const bool enabled =
+        RegQueryValueExA(key, "ProxyEnable", NULL, &enable_type,
+                         (LPBYTE)&enable, &enable_size) == ERROR_SUCCESS &&
+        enable_type == REG_DWORD && enable != 0;
+
+    char server[512] = {0};
+    DWORD server_size = sizeof(server) - 1, server_type = 0;
+    const bool has_server =
+        RegQueryValueExA(key, "ProxyServer", NULL, &server_type,
+                         (LPBYTE)server, &server_size) == ERROR_SUCCESS &&
+        (server_type == REG_SZ || server_type == REG_EXPAND_SZ) && server[0];
+    RegCloseKey(key);
+
+    if (!enabled || !has_server) return std::string();
+
+    // "host:port" or a per-scheme list "http=h:p;https=h:p;socks=h:p".
+    const std::string spec(server);
+    if (spec.find('=') == std::string::npos) return spec;
+
+    const bool https = strncmp(url, "https://", 8) == 0;
+    const char *want = https ? "https=" : "http=";
+    size_t pos = 0;
+    while (pos < spec.size())
+    {
+        const size_t end = spec.find(';', pos);
+        const std::string part =
+            spec.substr(pos, (end == std::string::npos) ? std::string::npos : end - pos);
+        if (part.compare(0, strlen(want), want) == 0 && part.size() > strlen(want))
+            return part.substr(strlen(want));
+        if (end == std::string::npos) break;
+        pos = end + 1;
+    }
+    return std::string();
+}
+#endif
+
+// Keeps verification ON and points CURLOPT_CAINFO at whatever bundle we find.
+static void apply_tls_trust(CURL *curl, const char *url)
+{
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+
+    const std::string ca = resolve_ca_bundle();
+    if (!ca.empty())
+    {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, ca.c_str());
+        LOG_DEBUG("TLS CA bundle for %s: %s", url, ca.c_str());
+        return;
+    }
+
+    LOG_WARN("No CA bundle found for %s (set CURL_CA_BUNDLE or place "
+             "ca-bundle.crt next to the executable); TLS may fail to verify",
+             url);
+
+    // An empty built-in path means no trust store, so every handshake fails TLS.
+#if LIBCURL_VERSION_NUM >= 0x075400
+    const char *builtin_ca = NULL;
+    if (curl_easy_getinfo(curl, CURLINFO_CAINFO, &builtin_ca) == CURLE_OK)
+        LOG_WARN("libcurl built-in CAINFO for %s: %s", url,
+                 (builtin_ca && *builtin_ca) ? builtin_ca : "(none)");
+#endif
+
+    // Schannel honours this, OpenSSL ignores it: a harmless best-effort fallback.
+#ifdef CURLSSLOPT_NATIVE_CA
+    curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, (long)CURLSSLOPT_NATIVE_CA);
+#endif
+}
+
+// CURLOPT_HEADERDATA carries a single pointer, so the buffer and its size travel together.
+struct HeaderSink {
+    char *buf;
+    size_t size;
+};
+
+// Capture every Set-Cookie "name=value" pair, replacing same-named pairs and joining with "; ".
+static size_t capture_set_cookie_cb(char *buffer, size_t size, size_t nitems, void *userdata)
+{
+    const size_t realsize = size * nitems;
+    HeaderSink *sink = (HeaderSink *)userdata;
+    if (!sink || !sink->buf || sink->size == 0)
+        return realsize;
+
+    static const char kPrefix[] = "set-cookie:";
+    if (realsize <= sizeof(kPrefix) - 1)
+        return realsize;
+    for (size_t i = 0; i < sizeof(kPrefix) - 1; i++)
+    {
+        if (tolower((unsigned char)buffer[i]) != kPrefix[i])
+            return realsize;
+    }
+
+    const char *val = buffer + (sizeof(kPrefix) - 1);
+    const char *end = buffer + realsize;
+    while (val < end && (*val == ' ' || *val == '\t')) val++;
+    const char *semi = val;
+    while (semi < end && *semi != ';' && *semi != '\r' && *semi != '\n') semi++;
+    const size_t vlen = (size_t)(semi - val);
+    if (vlen == 0) return realsize;
+
+    const char *eq = val;
+    while (eq < semi && *eq != '=') eq++;
+    const size_t name_len = (size_t)(eq - val);
+
+    // rebuild: drop any existing pair with the same cookie name, then append this one
+    char rebuilt[512];
+    size_t out = 0;
+    const char *p = sink->buf;
+    while (*p && out + 1 < sizeof(rebuilt))
+    {
+        const char *pair_end = strchr(p, ';');
+        size_t pair_len = pair_end ? (size_t)(pair_end - p) : strlen(p);
+        const char *ps = p;
+        while (pair_len > 0 && (*ps == ' ' || *ps == '\t')) { ps++; pair_len--; }
+        const char *peq = ps;
+        size_t pl = pair_len;
+        while (pl > 0 && *peq != '=') { peq++; pl--; }
+        const size_t pname_len = (size_t)(peq - ps);
+        const bool same = (pname_len == name_len) && (strncmp(ps, val, name_len) == 0);
+        if (!same)
+        {
+            if (out > 0 && out + 2 < sizeof(rebuilt)) { rebuilt[out++] = ';'; rebuilt[out++] = ' '; }
+            size_t copy = pair_len;
+            if (out + copy + 1 >= sizeof(rebuilt)) copy = sizeof(rebuilt) - out - 1;
+            memcpy(rebuilt + out, ps, copy);
+            out += copy;
+        }
+        if (!pair_end) break;
+        p = pair_end + 1;
+    }
+    if (out > 0 && out + 2 < sizeof(rebuilt)) { rebuilt[out++] = ';'; rebuilt[out++] = ' '; }
+    size_t copy = vlen;
+    if (out + copy + 1 >= sizeof(rebuilt)) copy = sizeof(rebuilt) - out - 1;
+    memcpy(rebuilt + out, val, copy);
+    out += copy;
+    rebuilt[out] = '\0';
+
+    snprintf(sink->buf, sink->size, "%s", rebuilt);
+    return realsize;
+}
+
+// keep_error_body: hand back a non-2xx body (success stays false) for Horizons.
+FetchResult HttpPerform(const HttpRequest *req)
 {
     FetchResult result = {0};
     result.success = false;
+
+    const char *url = (req && req->url) ? req->url : "";
+    const bool keep_error_body = req ? req->keep_error_body : false;
+    const bool no_retry_on_429 = req ? req->no_retry_on_429 : false;
 
     struct MemoryBuf chunk = {0};
     chunk.memory = (char*)malloc(1);
@@ -274,6 +541,8 @@ static FetchResult http_fetch(const char *url)
         LOG_ERROR("Failed to allocate HTTP response buffer");
         return result;
     }
+
+    ensure_curl_global_init();
 
     CURL *curl = curl_easy_init();
     if (!curl)
@@ -292,6 +561,16 @@ static FetchResult http_fetch(const char *url)
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
 
     size_t proxy_count = 1;
+#ifdef _WIN32
+    {
+        const std::string sys_proxy = resolve_windows_system_proxy(url);
+        if (!sys_proxy.empty())
+        {
+            curl_easy_setopt(curl, CURLOPT_PROXY, sys_proxy.c_str());
+            LOG_DEBUG("Windows system proxy for %s: %s", url, sys_proxy.c_str());
+        }
+    }
+#endif
 #ifdef __APPLE__
     auto env_set = [](const char *name) {
         const char *value = getenv(name);
@@ -326,9 +605,26 @@ static FetchResult http_fetch(const char *url)
              TLESCOPE_VERSION);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, user_agent);
 
-#if defined(_WIN32) || defined(_WIN64)
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-#endif
+    if (req && req->post_fields)
+    {
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req->post_fields);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)strlen(req->post_fields));
+    }
+    if (req && req->cookie && req->cookie[0])
+        curl_easy_setopt(curl, CURLOPT_COOKIE, req->cookie);
+
+    HeaderSink header_sink = {0};
+    if (req && req->captured_cookie && req->captured_cookie_size > 0)
+    {
+        req->captured_cookie[0] = '\0';
+        header_sink.buf = req->captured_cookie;
+        header_sink.size = req->captured_cookie_size;
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, capture_set_cookie_cb);
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, (void *)&header_sink);
+    }
+
+    apply_tls_trust(curl, url);
 
     const int max_attempts = 3;
     CURLcode res = CURLE_OK;
@@ -353,6 +649,10 @@ static FetchResult http_fetch(const char *url)
             curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
 
             if (res != CURLE_OK || http_status_success(http_code))
+                break;
+
+            // Space-Track treats 429 itself; a curl-internal retry storm is ToS-hostile
+            if (no_retry_on_429 && http_code == 429)
                 break;
 
             if (!http_status_retryable(http_code) || attempt == max_attempts)
@@ -386,6 +686,7 @@ static FetchResult http_fetch(const char *url)
 
     curl_easy_cleanup(curl);
     result.http_code = http_code;
+    result.curl_code = (int)res;
 
     if (res == CURLE_OK && http_status_success(http_code))
     {
@@ -397,15 +698,50 @@ static FetchResult http_fetch(const char *url)
     else
     {
         if (res == CURLE_OK)
+        {
             LOG_ERROR("HTTP fetch failed: %s (HTTP %ld)", url, http_code);
+            if (keep_error_body)
+            {
+                result.data = chunk.memory;
+                result.size = chunk.size;
+            }
+            else
+            {
+                free(chunk.memory);
+            }
+        }
         else
-            LOG_ERROR("HTTP transport failed: %s (%s)", url, curl_easy_strerror(res));
-        free(chunk.memory);
+        {
+            // no status line: the CURLcode distinguishes DNS/TLS/connect/timeout
+            LOG_ERROR("HTTP transport failed: %s (%s, CURLcode %d)",
+                      url, curl_easy_strerror(res), (int)res);
+            if (res == CURLE_PEER_FAILED_VERIFICATION ||
+                res == CURLE_SSL_CONNECT_ERROR || res == CURLE_SSL_CACERT)
+                LOG_ERROR("TLS trust failure for %s: place a PEM bundle next to "
+                          "the executable or set CURL_CA_BUNDLE", url);
+            free(chunk.memory);
+        }
     }
 
     return result;
 }
 
+/* Caller owns result.data; release it with FreeFetchResult(). */
+FetchResult HttpFetchURL(const char *url)
+{
+    HttpRequest req = {};
+    req.url = url;
+    req.keep_error_body = true;
+    return HttpPerform(&req);
+}
+
+static FetchResult http_fetch_ex(const char *url, bool keep_error_body)
+{
+    HttpRequest req = {};
+    req.url = url;
+    req.keep_error_body = keep_error_body;
+    return HttpPerform(&req);
+}
 
 static FetchResult file_fetch(const char *filename)
 {
@@ -443,7 +779,7 @@ static FetchResult file_fetch(const char *filename)
     result.data[content.size()] = '\0';
 
     result.size = content.size();
-    result.format = FORMAT_TLE;  // Adjust to your actual enum value
+    result.format = FORMAT_TLE;
     result.http_code = 0;        // Not applicable to a local file
     result.success = true;
 
@@ -464,6 +800,12 @@ FetchResult FetchFromSource(const DataSource *source, OrbitalDataFormat format)
     {
         // custom sources use their URL directly; append format if needed
         snprintf(url, sizeof(url), "%s", source->base_url);
+    }
+    else if (source->type == PROVIDER_SPACETRACK)
+    {
+        // Space-Track has no auth-free FetchFromSource path; it goes through SpacetrackFetchQuery()
+        LOG_ERROR("Space-Track sources go through SpacetrackFetchQuery(), not FetchFromSource()");
+        return result;
     }
     else
     {
@@ -495,7 +837,7 @@ FetchResult FetchFromSource(const DataSource *source, OrbitalDataFormat format)
 
     LOG_DEBUG("Cache MISS for %s - fetching from network", url);
     // fetch from network
-    result = http_fetch(url);
+    result = http_fetch_ex(url, false);
     if (result.success)
     {
         result.format = format;
@@ -536,7 +878,7 @@ int FetchRetlectorGroups(RetlectorGroup *groups, int max_groups, long *out_http_
     if (!groups || max_groups <= 0) return -1;
 
     const char *url = "https://retlector.eu/api/v1/groups";
-    FetchResult result = http_fetch(url);
+    FetchResult result = http_fetch_ex(url, false);
     if (out_http_code) *out_http_code = result.http_code;
     if (!result.success)
     {
@@ -576,12 +918,27 @@ int FetchRetlectorGroups(RetlectorGroup *groups, int max_groups, long *out_http_
             name = obj["name"].get<std::string>();
         if (name.empty()) continue;
 
+        std::string status = obj.value("status", std::string());
+        // an expired group has no data behind its endpoint, so it must not show up
+        // in the picker as if it were selectable
+        if (status.size() == 7)
+        {
+            bool is_expired = true;
+            static const char *expired = "expired";
+            for (size_t c = 0; c < 7; c++)
+                if (tolower((unsigned char)status[c]) != expired[c]) { is_expired = false; break; }
+            if (is_expired)
+            {
+                LOG_INFO("Skipping expired retlector group '%s'", name.c_str());
+                continue;
+            }
+        }
+
         RetlectorGroup *g = &groups[count];
         copy_str(g->name, sizeof(g->name), name);
         snprintf(g->csv_endpoint, sizeof(g->csv_endpoint),
                  "https://retlector.eu/%s/csv", name.c_str());
-        copy_str(g->status, sizeof(g->status),
-                 obj.value("status", std::string()));
+        copy_str(g->status, sizeof(g->status), status);
         copy_str(g->status_label, sizeof(g->status_label),
                  obj.value("statusLabel", std::string()));
         copy_str(g->last_updated, sizeof(g->last_updated),
@@ -747,7 +1104,7 @@ FetchResult FetchFromCustomURL(const char *url)
     }
 
     LOG_INFO("Fetching custom URL: %s", url);
-    result = http_fetch(url);
+    result = http_fetch_ex(url, false);
 
     if (result.success)
     {

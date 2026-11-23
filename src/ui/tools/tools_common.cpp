@@ -1,13 +1,11 @@
-// tools_common.cpp - Shared helpers and state for tool panels
-//
-// Contains the data-source selection (shopping-cart) persistence and the
-// small UI helpers (InfoRow, RA/Dec formatting, case-insensitive search)
-// that several tool panels rely on.
+// Shared helpers and state for tool panels.
 
 #include "tools_common.h"
+#include "core/astro.h"
 #include "core/config.h"
 #include "core/theme.h"
 #include "data/async_fetch.h"
+#include "data/ephem.h"
 #include "data/storage.h"
 #include "ui/imgui_theme.h"
 #include "ui/notifications.h"
@@ -25,11 +23,6 @@
 
 #include "imgui.h"
 #include "IconsFontAwesome6.h"
-
-// -- Shared state -----------------------------------------------------------
-
-bool log_auto_scroll = true;
-bool log_show_timestamps = false;  // timestamps hidden by default (cleaner)
 
 // -- Helpers ----------------------------------------------------------------
 
@@ -221,28 +214,178 @@ static bool g_pull_running = false;  // a pull started via DataSourcesStartPull(
 static int g_pull_total = 0;         // number of sources in that pull
 static bool g_pull_auto = false;     // the in-flight pull was auto-triggered
 
+// snapshot ephem mission rows across a pull wipe; bound to registry slots, not MAX_SATELLITES_HARD_CAP
+static Satellite g_pull_ephem_snap[EPHEM_MAX_MISSIONS];
+static int g_pull_ephem_snap_count = 0;
+
+/* selection identity (nil unless the row selected at pull start was an ephem one) */
+static Satellite **g_pull_ephem_sel_slot = NULL;  // ctx->selected_sat, stable for the app lifetime
+static uint32_t g_pull_ephem_sel_norad = 0;       // synthetic NORAD id (900000 + mission id)
+static int g_pull_ephem_sel_id = -1;              // registry id of the selected mission
+
+/* drop any stale snapshot; a repeated failed pull must never duplicate entries */
+static void pull_ephem_snapshot_clear(void)
+{
+    g_pull_ephem_snap_count = 0;
+    g_pull_ephem_sel_slot = NULL;
+    g_pull_ephem_sel_norad = 0;
+    g_pull_ephem_sel_id = -1;
+}
+
+/* capture every ephem satellite row and the current ephem selection, if any */
+static void pull_ephem_snapshot_take(UIContext *ctx)
+{
+    pull_ephem_snapshot_clear();
+
+    Satellite *sel = (ctx && ctx->selected_sat) ? *ctx->selected_sat : NULL;
+
+    for (int i = 0; i < sat_count; i++)
+    {
+        if (!SatIsEphem(&satellites[i]))
+            continue;
+
+        if (g_pull_ephem_snap_count >= EPHEM_MAX_MISSIONS)
+        {
+            LOG_WARN("Pull: ephemeris snapshot full (%d) - dropping row '%s'",
+                     EPHEM_MAX_MISSIONS, satellites[i].name);
+            continue;
+        }
+
+        g_pull_ephem_snap[g_pull_ephem_snap_count++] = satellites[i];
+
+        if (sel == &satellites[i] && ctx && ctx->selected_sat)
+        {
+            g_pull_ephem_sel_slot = ctx->selected_sat;
+            g_pull_ephem_sel_norad = satellites[i].norad_id_num;
+            g_pull_ephem_sel_id = satellites[i].ephem_id;
+        }
+    }
+
+    if (g_pull_ephem_snap_count > 0)
+        LOG_INFO("Pull: snapshotted %d ephemeris satellite(s)", g_pull_ephem_snap_count);
+}
+
+/* re-append the snapshotted rows after the fetch has merged its TLE satellites */
+static void pull_ephem_restore(void)
+{
+    const int snap_count = g_pull_ephem_snap_count;
+    g_pull_ephem_snap_count = 0;
+
+    int restored = 0;
+    int dropped = 0;
+
+    for (int i = 0; i < snap_count; i++)
+    {
+        const Satellite &snap = g_pull_ephem_snap[i];
+
+        // the registry is authoritative: drop a row whose mission was removed mid-pull
+        if (EphemGetById(snap.ephem_id) == NULL)
+        {
+            LOG_WARN("Pull: dropping ephemeris satellite '%s' - mission id %d no longer exists",
+                     snap.name, snap.ephem_id);
+            dropped++;
+            continue;
+        }
+
+        /* a load path may already have re-materialised the row from data.json */
+        bool duplicate = false;
+        for (int k = 0; k < sat_count; k++)
+        {
+            if (satellites[k].norad_id_num == snap.norad_id_num)
+            {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate)
+        {
+            LOG_INFO("Pull: ephemeris satellite '%s' already present - not re-adding", snap.name);
+            continue;
+        }
+
+        if (sat_count >= GetMaxSatellites())
+        {
+            LOG_WARN("Pull: satellite limit (%d) reached - dropping ephemeris satellite '%s'",
+                     GetMaxSatellites(), snap.name);
+            dropped++;
+            continue;
+        }
+
+        satellites[sat_count++] = snap;
+        restored++;
+    }
+
+    if (restored > 0 || dropped > 0)
+        LOG_INFO("Pull: restored %d ephemeris satellite(s), dropped %d", restored, dropped);
+
+    /* restore the selection only when the row still exists after the merge */
+    if (g_pull_ephem_sel_slot && g_pull_ephem_sel_id > 0)
+    {
+        Satellite *found = NULL;
+        for (int i = 0; i < sat_count; i++)
+        {
+            if (satellites[i].norad_id_num != g_pull_ephem_sel_norad || !SatIsEphem(&satellites[i]))
+                continue;
+            if (satellites[i].ephem_id != g_pull_ephem_sel_id || EphemGetById(satellites[i].ephem_id) == NULL)
+                continue;
+            found = &satellites[i];
+            break;
+        }
+        if (found)
+        {
+            *g_pull_ephem_sel_slot = found;
+            LOG_INFO("Pull: ephemeris selection restored ('%s')", found->name);
+        }
+        else
+        {
+            LOG_WARN("Pull: ephemeris selection is no longer available - left cleared");
+        }
+    }
+
+    g_pull_ephem_sel_slot = NULL;
+    g_pull_ephem_sel_norad = 0;
+    g_pull_ephem_sel_id = -1;
+}
+
 bool DataSourcesPullInProgress(void) { return g_pull_running; }
 int DataSourcesPullTotal(void) { return g_pull_total; }
 void DataSourcesSetAutoPull(bool is_auto) { g_pull_auto = is_auto; }
 
 bool DataSourcesStartPull(AppConfig *cfg, UIContext *ctx)
 {
-    int count = DataSelectionCount();
-    if (count == 0)
-    {
-        LOG_INFO("No sources selected to pull");
-        return false;
-    }
-
-    /* never start a second pull while one is already in flight */
     if (AsyncFetchBusy())
         return false;
 
+    int count = DataSelectionCount();
+    if (count == 0)
+    {
+        LOG_INFO("No sources selected to pull - wiping all loaded data");
+
+        if (ctx && ctx->selected_sat)
+            *ctx->selected_sat = NULL;
+
+        sat_count = 0;
+        EphemClear();
+
+        SaveSatSelection(cfg);
+
+        SaveOrbitalData("data.json", satellites, sat_count);
+
+        NotifyPush(NOTIFY_INFO, ICON_FA_TRASH_CAN,
+                   "No sources selected - cleared all loaded data");
+        return false;
+    }
+
+    LOG_INFO("Starting data pull: %d source(s)", count);
     g_pull_total = count;
     g_pull_auto = false;
 
     /* Snapshot the active NORAD ids before replacing the catalogue. */
     SaveSatSelection(cfg);
+
+    // ephem rows are not provider data: carry them across the wipe
+    pull_ephem_snapshot_take(ctx);
+
     if (ctx && ctx->selected_sat)
         *ctx->selected_sat = NULL;
 
@@ -279,6 +422,11 @@ void DataSourcesPollPullCompletion(AppConfig *cfg)
 
     // fetched records start inactive; restore only NORAD ids that were active before this refresh
     LoadSatSelection(cfg);
+
+    // re-append before persisting and the failure check so sat_count is the merged
+    // count; a pull returning zero TLE satellites still succeeds if a mission remains
+    pull_ephem_restore();
+
     SaveOrbitalData("data.json", satellites, sat_count);
 
     /* clearing the flag first guarantees the toast fires exactly once */
@@ -287,6 +435,7 @@ void DataSourcesPollPullCompletion(AppConfig *cfg)
 
     // distinguish success/partial/total failure so a 24/7 operator notices silent refresh failures
     int failed = AsyncFetchTakeFailureCount();
+    LOG_INFO("Data pull complete: %d satellites, %d failed", sat_count, failed);
     if (sat_count <= 0)
     {
         /* nothing arrived at all: offline or every selected source failed */

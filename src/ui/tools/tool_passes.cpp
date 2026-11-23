@@ -1,14 +1,3 @@
-/*
- * tool_passes.cpp - Satellite Passes panel
- *
- * ROADMAP section 2:
- *   2.1 Two pass modes (single-sat / all-active) + real-time updates.
- *   2.2 Richer pass entries with unique ImGui IDs, AOS/LOS, max elevation.
- *   2.3 Pass progress bar (green when ongoing).
- *   2.5 Pass-to-Doppler handoff.
- *   2.6 Pass list height cap with internal scroll.
- */
-
 #include "tools.h"
 #include "tools_settings.h"
 #include "tools_common.h"
@@ -55,9 +44,20 @@ void DrawPanelPasses(UIContext *ctx, AppConfig *cfg)
     if (ImGui::SliderFloat("Time Span", &pass_time_span_hours, 1.0f, 72.0f, "%.0f h"))
         ToolSettingSetFloat(cfg, "passes.time_span_hours", pass_time_span_hours);
 
+    /* tabulated ephemeris missions have no orbital elements to scan for AOS/LOS */
+    Satellite *sel_sat = *ctx->selected_sat;
+    if (s_mode == 0 && SatIsEphem(sel_sat))
+    {
+        ImGui::Separator();
+        ImGui::TextColored(ThemeColor(g_theme.ui.text_dim),
+                           "Pass prediction is not available for ephemeris missions.");
+        ImGui::PopTextWrapPos();
+        return;
+    }
+
     /* shared with the Transit panel: recompute only when inputs change */
     double now = *ctx->current_epoch;
-    if (EnsurePassesUpToDate((unsigned int)s_mode, *ctx->selected_sat, now))
+    if (EnsurePassesUpToDate((unsigned int)s_mode, sel_sat, now))
         s_last_calc_epoch = now;
 
     ImGui::Separator();
@@ -85,8 +85,7 @@ void DrawPanelPasses(UIContext *ctx, AppConfig *cfg)
         char aos_str[64];
         epoch_to_time_str(p->aos_epoch, aos_str);
 
-        /* ETA counter: time until AOS for future passes, time remaining for
-         * ongoing passes. */
+        /* ETA counter: time until AOS for future passes, time remaining for ongoing passes */
         double span = p->los_epoch - p->aos_epoch;
         bool ongoing = (span > 0.0 && now >= p->aos_epoch && now <= p->los_epoch);
         double eta_s = ongoing ? (p->los_epoch - now) * 86400.0
@@ -132,8 +131,7 @@ void DrawPanelPasses(UIContext *ctx, AppConfig *cfg)
             TransitOpenDopplerTab(cfg);
         }
 
-        /* ---- 2.3: thin progress bar, only while the pass is
-         * ongoing. Drawn directly so it can be just a few px tall. */
+        /* ---- 2.3: thin progress bar, only while the pass is ongoing ---- */
         if (ongoing)
         {
             double progress = (now - p->aos_epoch) / span;

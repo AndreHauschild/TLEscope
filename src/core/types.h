@@ -3,15 +3,6 @@
 
 #include "../../lib/csgp4.h"
 
-/**
- * @file types.h
- * @brief Core type definitions and shared constants
- *
- * Central header that defines all data structures, enums, and constants
- * used across the application. Must be included before raylib.h on Windows
- * to avoid symbol conflicts.
- */
-
 // include windows.h before raylib.h to avoid symbol conflicts (Rectangle, CloseWindow, ShowCursor, LoadImage, DrawText, DrawTextEx)
 #ifdef _WIN32
     #ifndef WIN32_LEAN_AND_MEAN
@@ -33,9 +24,7 @@
         #define NOMCX
     #endif
 
-    // Rename Windows API *functions* (not macros) that conflict with raylib's
-    // declarations.  These must be defined BEFORE windows.h is first included
-    // so the preprocessor rewrites the Windows declarations to unique names.
+    // Rename Windows API functions that conflict with raylib's declarations (must precede windows.h).
     #define CloseWindow Win32_CloseWindow
     #define ShowCursor  Win32_ShowCursor
 
@@ -75,8 +64,17 @@
 #define MAX_LOCATIONS 256
 #define EARTH_RADIUS_KM 6371.0f
 #define MOON_RADIUS_KM 1737.4f
+#define SUN_RADIUS_KM 696340.0f
 #define MU 398600.4418f
 #define DRAW_SCALE 3000.0f
+
+/* Body an orbit polyline is drawn relative to; storage stays geocentric, only the 3D draw cache is re-based. */
+typedef enum {
+    REF_BODY_EARTH = 0,
+    REF_BODY_MOON  = 1,
+    REF_BODY_SUN   = 2,
+    REF_BODY_COUNT
+} RefBody;
 
 /* symmetric timewarp magnitude limit: 524288 == 2^19 */
 #define MAX_TIME_MULTIPLIER 524288.0
@@ -122,8 +120,15 @@ typedef enum {
     FORMAT_OMM_JSON,    // CCSDS OMM JSON
     FORMAT_OMM_CSV,     // CCSDS OMM CSV
     FORMAT_OMM_XML,     // CCSDS OMM XML
-    FORMAT_OMM_KVN      // CCSDS OMM Key-Value Notation
+    FORMAT_OMM_KVN,     // CCSDS OMM Key-Value Notation
+    FORMAT_HORIZONS_VECTORS // JPL Horizons VECTORS ephemeris
 } OrbitalDataFormat;
+
+/** how a satellite's state is produced: SGP4 elements vs. tabulated ephemeris */
+typedef enum {
+    SAT_KIND_SGP4 = 0,  // classic SGP4 propagation (default for zero-initialized structs)
+    SAT_KIND_EPHEM = 1  // sampled ephemeris (JPL Horizons VECTORS)
+} SatKind;
 
 /** metadata about where/how orbital data was obtained */
 typedef struct {
@@ -183,6 +188,9 @@ typedef struct
     double cached_orbit_epoch;  // epoch when cache was last calculated
     bool orbit_cached;
     bool is_active;
+    SatKind kind;                // how this satellite's state is produced
+    int ephem_id;                // registry id when kind == SAT_KIND_EPHEM
+    bool ephem_window_disabled;  // is_active was cleared automatically by ephem window exit (auto-reactivates)
 
     OrbitalDataMeta data_meta;  // provenance of this satellite's data
 } Satellite;
@@ -230,7 +238,8 @@ typedef enum {
     SOURCE_CELESTRAK,
     SOURCE_CUSTOM_URL,
     SOURCE_CUSTOM_FILE,
-    SOURCE_CUSTOM_PASTE
+    SOURCE_CUSTOM_PASTE,
+    SOURCE_SPACETRACK        // appended: keeps persisted ints and the AsyncJobType cast valid
 } SourceType;
 
 typedef struct {
@@ -356,7 +365,10 @@ typedef struct
     bool show_night_lights;
     bool show_markers;
     bool show_statistics;
+    bool show_support_button;
     bool limit_map_zoomout;  // cap 2D map zoom-out at the viewport fill level (default true)
+    bool camera_smoothing_2d;
+    bool camera_smoothing_3d;
     bool highlight_sunlit;
     bool show_slant_range;
     bool show_scattering;
@@ -364,6 +376,7 @@ typedef struct
     bool show_skybox;
     bool show_sun;
     bool show_sun_flare;
+    bool show_sun_anamorphic;
     bool show_ecliptic_frame;
     bool show_ground_coverage;
     bool show_apsides;
@@ -375,6 +388,7 @@ typedef struct
     bool reload_theme;
     bool use_local_time;   // display dates/times in the system local timezone (default true)
     bool night_mode;       // full-screen monochrome-red post-process for dark adaptation
+    bool discord_rpc_enabled; // publish presence to the local Discord client (default true)
     int first_day_of_week; // first day of the week in date pickers: 0 = Sunday, 1 = Monday (default)
 
     bool prop_use_short_period;   // include J2 short-period terms in the cheap path (default true)
@@ -403,6 +417,8 @@ typedef struct
     bool auto_repull_stale;            // auto re-pull stale data instead of prompting (default false)
     int network_timeout_seconds;       // HTTP request timeout, 15-300 seconds (default 45)
     int max_satellites;                // runtime limit, MIN_MAX_SATELLITES..MAX_MAX_SATELLITES
+    int file_log_level;                // file log verbosity: 0=Off, 1=Debug, 2=Info, 3=Warn, 4=Error
+    int log_file_max_kb;               // auto-trim threshold for the log file, in KB
 
     UILayoutPersist ui_layout;  // sidebar/panel layout persistence
 

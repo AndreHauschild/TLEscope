@@ -42,7 +42,6 @@ typedef struct
     float sc_x, sc_y;   /* scope dialog */
     float si_x, si_y;   /* satellite info */
     float rot_x, rot_y; /* rotator window */
-    float lw_x, lw_y;   /* log window */
 
     /* drag state */
     bool drag_sat_mgr;
@@ -67,8 +66,6 @@ typedef struct
     Vector2 drag_sat_info_off;
     bool rot_dragging;
     Vector2 rot_drag_off;
-    bool drag_log;
-    Vector2 drag_log_off;
 
     /* scroll state */
     Vector2 sat_mgr_scroll;
@@ -118,9 +115,6 @@ typedef struct
     /* rotator state */
     bool rot_show_window;
 
-    /* log window state */
-    bool log_auto_scroll;
-
     /* satellite info state */
     bool si_has_been_placed;
     bool si_rolled_up;
@@ -135,6 +129,14 @@ typedef struct
 
     /* file dialog */
     FileDialog file_dialog_tle;
+
+    /* ephemeris mission import (JPL Horizons VECTORS) */
+    FileDialog file_dialog_ephem;  /* separate instance: both sections poll draw() every frame */
+    bool ephem_modal_open;         /* "Add Mission" modal visibility            */
+    char ephem_name_buf[48];       /* editable mission name                     */
+    char ephem_target_buf[32];     /* editable Horizons target id/name          */
+    char ephem_path_buf[512];      /* last picked file, shown in the modal      */
+    char ephem_error[256];         /* parse/import error, empty when clean      */
 
     /* pass state */
     int selected_pass_idx;
@@ -170,6 +172,8 @@ typedef struct
     bool *is_auto_warping;
     double *auto_warp_target;
     double *auto_warp_initial_diff;
+    // when true the active auto-warp ignores MAX_TIME_MULTIPLIER for ephem window jumps
+    bool *auto_warp_unbounded;
     // sim clock slaved to the wall clock; false after a manual date jump so the live lock doesn't snap back to "now"
     bool *live_follow;
     bool *is_2d_view;
