@@ -1,10 +1,6 @@
 /*
  * tool_isl.cpp - ISL panel
  *
- * TODO:
- *
- *  - Make link data structures private of LinkSchedule class
- *
  */
 
 #include <stdio.h>
@@ -44,7 +40,11 @@
 #define ISL_MODE_ALL           1  /* All: every active satellite gets a label */
 #define ISL_MODE_FAV           2  /* fav: only favorite satellites get a label */
 
-/* Data structures */
+/* Data structures
+ *
+ * TODO: make LinkPair and LinkEpoch private classes of LinkSchedule class
+ *
+ * */
 
 class LinkPair
 {
@@ -160,6 +160,12 @@ const LinkEpoch *LinkSchedule::find(double epoch) const
             [](double e, const LinkEpoch &entry) { return e < entry.epoch; });
 
     return &*(it - 1);
+}
+
+/* true if the link has the satellite as one of its endpoints */
+static bool LinkTouches(const LinkPair &link, const Satellite *sat)
+{
+    return sat && (link.norad1 == sat->norad_id_num || link.norad2 == sat->norad_id_num);
 }
 
 /* Link schedule object */
@@ -335,7 +341,7 @@ void DrawPanelIsl(UIContext *ctx, AppConfig *cfg)
     if (showIsl!=prev)
         ToolSettingSetBool(cfg, "isl.enabled", showIsl);
     DrawScopeCombo("##label_mode", ISL_KEY_MODE, ISL_MODE_ALL,
-                   "Sel: only the selected satellite's links; All: links for all active satellites; Fav: links for favorite satellites",
+                   "Sel: links of the selected satellite (hovering a satellite previews its links); All: links for all active satellites; Fav: links for favorite satellites",
                    showIsl);
 
     /*
@@ -484,6 +490,10 @@ void DrawSceneIsl(SceneContext *sctx, AppConfig *cfg)
         /* Get link display mode */
         int mode = ToolSettingGetInt(cfg, ISL_KEY_MODE, ISL_MODE_ALL);
 
+        /* hovered satellite (only if it differs from the selected one) */
+        const Satellite *hovered = (sctx->active_sat && sctx->active_sat != sctx->selected_sat)
+                                   ? sctx->active_sat : nullptr;
+
         const LinkEpoch* isls = schedule.find(sctx->current_epoch);
         if (isls) {
             for (int i = 0; i<isls->links.size(); i++)
@@ -498,13 +508,10 @@ void DrawSceneIsl(SceneContext *sctx, AppConfig *cfg)
                     if (!satellites[j].is_active)
                         continue;
 
-                    // TODO: include check for hovered satellite!
-
-                    /* Show only links from selected satellite */
+                    /* Show only links from selected or hovered satellite */
                     if (mode == ISL_MODE_SELECTED_ONLY && \
-                        (!sctx->selected_sat ||
-                        (isls->links[i].norad1 != sctx->selected_sat->norad_id_num && \
-                         isls->links[i].norad2 != sctx->selected_sat->norad_id_num)))
+                        (!LinkTouches(isls->links[i], sctx->selected_sat) && \
+                         !LinkTouches(isls->links[i], hovered)))
                         continue;
 
                     /* Show only links from favorite satellite */
