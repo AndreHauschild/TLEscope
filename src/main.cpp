@@ -2584,6 +2584,7 @@ int main(int argc, char **argv)
         };
 
         float m_size_2d = 24.0f * cfg.ui_scale / Camera2DParams.zoom;
+        float sat_size_2d = m_size_2d * cfg.sat_icon_scale;
         float mark_size_2d = 32.0f * cfg.ui_scale / Camera2DParams.zoom;
 
         /* Earth Texture toggle (Layers panel); off = theme-colored solid body */
@@ -3154,10 +3155,22 @@ int main(int argc, char **argv)
                             {
                                 for (int offset_i = first_copy; offset_i <= last_copy; offset_i++)
                                 {
-                                    DrawTexturePro(
-                                        satIcon, (Rectangle){0, 0, satIcon.width, satIcon.height}, (Rectangle){sat_mx + (offset_i * map_w), sat_my, m_size_2d, m_size_2d},
-                                        (Vector2){m_size_2d / 2.f, m_size_2d / 2.f}, 0.0f, sCol
-                                    );
+                                    if (cfg.force_sat_dots)
+                                    {
+                                        /* tiny square matching the 3D zoom-out dot */
+                                        const float dot_size = 5.0f / Camera2DParams.zoom;
+                                        DrawRectangleRec(
+                                            (Rectangle){sat_mx + (offset_i * map_w) - dot_size / 2.f, sat_my - dot_size / 2.f, dot_size, dot_size},
+                                            sCol
+                                        );
+                                    }
+                                    else
+                                    {
+                                        DrawTexturePro(
+                                            satIcon, (Rectangle){0, 0, satIcon.width, satIcon.height}, (Rectangle){sat_mx + (offset_i * map_w), sat_my, sat_size_2d, sat_size_2d},
+                                            (Vector2){sat_size_2d / 2.f, sat_size_2d / 2.f}, 0.0f, sCol
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -3787,6 +3800,7 @@ int main(int argc, char **argv)
 
             /* screen-space icons/text for 3d objects */
             float m_size_3d = 24.0f * cfg.ui_scale;
+            float sat_size_3d = m_size_3d * cfg.sat_icon_scale;
             float mark_size_3d = 32.0f * cfg.ui_scale;
             // constant screen-space dot radius; must not scale with zoom
             constexpr float SAT_DOT_RADIUS = 2.5f;
@@ -3795,12 +3809,15 @@ int main(int argc, char **argv)
             // rendered frame and does not jitter while zoom easing catches up
             const float marker_alpha = MarkerZoomAlpha(camDistance, draw_earth_radius);
             const bool markers_visible = marker_alpha > 0.001f;
-            // satellites crossfade icon -> dot so they never become invisible
-            const float icon_alpha = marker_alpha;
-            const float dot_alpha  = 1.0f - marker_alpha;
-            // once the dot dominates, the Earth is a speck: its occlusion test only
-            // flickers dots as the limb sweeps past, so skip it
-            const bool dots_dominate = dot_alpha >= icon_alpha;
+            // satellites crossfade icon -> dot so they never become invisible;
+            // the force-dots setting pins the crossfade to the dot end
+            const float icon_alpha = cfg.force_sat_dots ? 0.0f : marker_alpha;
+            const float dot_alpha  = cfg.force_sat_dots ? 1.0f : (1.0f - marker_alpha);
+            // once the natural zoom-out crossfade puts the dot in charge, the Earth
+            // is a speck: its occlusion test only flickers dots as the limb sweeps
+            // past, so skip it. This tracks marker_alpha only, never the forced
+            // alpha above, so forced dots stay occluded while zoomed in.
+            const bool dots_dominate = marker_alpha <= 0.5f;
 
             Vector3 camForward = Vector3Normalize(Vector3Subtract(Camera3DParams.target, Camera3DParams.position));
 
@@ -3943,7 +3960,7 @@ int main(int argc, char **argv)
 
             // icons share satIcon, so these DrawTexturePro calls collapse into one draw
             for (const IconDraw &ic : icon_batch)
-                DrawTexturePro(satIcon, (Rectangle){0, 0, satIcon.width, satIcon.height}, (Rectangle){ic.sp.x, ic.sp.y, m_size_3d, m_size_3d}, (Vector2){m_size_3d / 2.f, m_size_3d / 2.f}, ic.angle, ic.c);
+                DrawTexturePro(satIcon, (Rectangle){0, 0, satIcon.width, satIcon.height}, (Rectangle){ic.sp.x, ic.sp.y, sat_size_3d, sat_size_3d}, (Vector2){sat_size_3d / 2.f, sat_size_3d / 2.f}, ic.angle, ic.c);
 
             float h_lat_rad = home->lat * DEG2RAD, h_lon_rad = (home->lon + gmst_deg + cfg.earth_rotation_offset) * DEG2RAD;
             Vector3 h_pos = {cosf(h_lat_rad) * cosf(h_lon_rad) * draw_earth_radius, sinf(h_lat_rad) * draw_earth_radius, -cosf(h_lat_rad) * sinf(h_lon_rad) * draw_earth_radius};

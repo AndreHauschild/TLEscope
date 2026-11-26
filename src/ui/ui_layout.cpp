@@ -1554,6 +1554,19 @@ void DrawSettingsModal(UIContext *ctx, AppConfig *cfg)
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Keep the 2D map filling the viewport by capping how far it can zoom out");
 
+            if (ImGui::Checkbox("Force Satellite Dots", &cfg->force_sat_dots))
+                SaveAppConfig("settings.json", cfg);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Always draw satellites as the tiny dots used when zoomed out, instead of the satellite icon");
+
+            float icon_scale = cfg->sat_icon_scale;
+            if (ImGui::SliderFloat("Satellite Icon Scale", &icon_scale, 0.25f, 4.0f, "%.2fx"))
+                cfg->sat_icon_scale = icon_scale;
+            if (ImGui::IsItemDeactivatedAfterEdit())
+                SaveAppConfig("settings.json", cfg);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Scale offset applied to the satellite icons (1.00x = default size)");
+
             ImGui::Checkbox("Smooth Camera (2D Map)", &cfg->camera_smoothing_2d);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Ease 2D map pan and zoom instead of snapping directly");

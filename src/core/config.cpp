@@ -103,6 +103,8 @@ void LoadAppConfig(const char *filename, AppConfig *config)
     config->show_statistics = false;  
     config->show_support_button = true;  
     config->limit_map_zoomout = true;
+    config->force_sat_dots = false;
+    config->sat_icon_scale = 1.0f;
     config->camera_smoothing_2d = false;
     config->camera_smoothing_3d = true;
     config->highlight_sunlit = false;
@@ -319,6 +321,10 @@ void LoadAppConfig(const char *filename, AppConfig *config)
                     config->show_statistics = get_bool("show_statistics", config->show_statistics);
                     config->show_support_button = get_bool("show_support_button", config->show_support_button);
                     config->limit_map_zoomout = get_bool("limit_map_zoomout", config->limit_map_zoomout);
+                    config->force_sat_dots = get_bool("force_sat_dots", config->force_sat_dots);
+                    config->sat_icon_scale = get_float("sat_icon_scale", config->sat_icon_scale);
+                    if (config->sat_icon_scale < 0.25f) config->sat_icon_scale = 0.25f;
+                    if (config->sat_icon_scale > 4.0f) config->sat_icon_scale = 4.0f;
                     config->camera_smoothing_2d = get_bool("camera_smoothing_2d", config->camera_smoothing_2d);
                     config->camera_smoothing_3d = get_bool("camera_smoothing_3d", config->camera_smoothing_3d);
                     config->highlight_sunlit = get_bool("highlight_sunlit", config->highlight_sunlit);
@@ -794,6 +800,8 @@ void LoadAppConfig(const char *filename, AppConfig *config)
         config->show_statistics = false;
         config->show_support_button = true;
         config->limit_map_zoomout = true;
+        config->force_sat_dots = false;
+        config->sat_icon_scale = 1.0f;
         config->hint_vsync = true;
         config->night_mode = false;
         config->discord_rpc_enabled = true;
@@ -855,6 +863,8 @@ void SaveAppConfig(const char *filename, AppConfig *config)
     root["show_statistics"] = config->show_statistics;
     root["show_support_button"] = config->show_support_button;
     root["limit_map_zoomout"] = config->limit_map_zoomout;
+    root["force_sat_dots"] = config->force_sat_dots;
+    root["sat_icon_scale"] = config->sat_icon_scale;
     root["camera_smoothing_2d"] = config->camera_smoothing_2d;
     root["camera_smoothing_3d"] = config->camera_smoothing_3d;
     root["highlight_sunlit"] = config->highlight_sunlit;

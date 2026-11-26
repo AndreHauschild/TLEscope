@@ -87,7 +87,7 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
     float size = ImGui::GetFontSize() * size_mult;
 
     float ui_scale = cfg->ui_scale;
-    float icon_half = 12.0f * ui_scale; /* half of the 24px sat/marker icon */
+    float icon_half = 12.0f * ui_scale * cfg->sat_icon_scale; /* half of the 24px sat/marker icon */
     float pad = UIPx(4.0f);             /* gap between icon and text */
 
     std::vector<LabelCandidate> cands;

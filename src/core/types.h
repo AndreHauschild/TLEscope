@@ -363,6 +363,8 @@ typedef struct
     bool show_statistics;
     bool show_support_button;
     bool limit_map_zoomout;  // cap 2D map zoom-out at the viewport fill level (default true)
+    bool force_sat_dots;     // always draw satellites as the tiny zoom-out dots instead of icons
+    float sat_icon_scale;    // multiplier applied to satellite icon size (default 1.0)
     bool camera_smoothing_2d;
     bool camera_smoothing_3d;
     bool highlight_sunlit;
