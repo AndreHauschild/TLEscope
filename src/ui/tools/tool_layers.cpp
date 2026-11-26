@@ -1,7 +1,3 @@
-/*
- * tool_layers.cpp - Layers panel
- */
-
 #include "tools.h"
 #include "tools_common.h"
 #include "core/theme.h"
@@ -48,8 +44,7 @@ static int GridSpacingIndex(AppConfig *cfg)
 }
 
 /* -- Layer visibility presets ---------------------------------------------- */
-/* A preset names desired values for the primary + secondary layer toggles;
- * "Custom" shows when the live state matches no preset. */
+/* a preset names desired values for the primary + secondary layer toggles; "Custom" when none match */
 
 /* order of the primary (master visibility) toggles covered by presets */
 enum LayerToggleId
@@ -72,14 +67,13 @@ enum LayerToggleId
     LAYER_TOGGLE_CLOUDS,
     LAYER_TOGGLE_SKYBOX,
     LAYER_TOGGLE_ECLIPTIC,
-    LAYER_TOGGLE_MOON_ORBIT,
+    LAYER_TOGGLE_DRAW_ORBITS,
     LAYER_TOGGLE_SUN,
     LAYER_TOGGLE_SUN_FLARE,
     LAYER_TOGGLE_COUNT
 };
 
-/* secondary (sub/scope) options covered by presets; stored as int (scope
- * combos use 0/1/2, on/off sub-toggles use 0/1) */
+/* secondary (sub/scope) options covered by presets; stored as int (scope combos 0/1/2, toggles 0/1) */
 enum LayerSubToggleId
 {
     LAYER_SUB_LABELS_MODE = 0,      /* Labels Sel/All/Fav      (LABELS_KEY_MODE)      */
@@ -116,7 +110,7 @@ static void LayerPresetValues(int preset, bool out[LAYER_TOGGLE_COUNT])
         out[LAYER_TOGGLE_CLOUDS] = true;
         out[LAYER_TOGGLE_SKYBOX] = true;
         out[LAYER_TOGGLE_ECLIPTIC] = false;
-        out[LAYER_TOGGLE_MOON_ORBIT] = true;
+        out[LAYER_TOGGLE_DRAW_ORBITS] = true;
         out[LAYER_TOGGLE_SUN] = true;
         out[LAYER_TOGGLE_SUN_FLARE] = true;
         break;
@@ -140,7 +134,7 @@ static void LayerPresetValues(int preset, bool out[LAYER_TOGGLE_COUNT])
         out[LAYER_TOGGLE_CLOUDS] = false;
         out[LAYER_TOGGLE_SKYBOX] = false;
         out[LAYER_TOGGLE_ECLIPTIC] = false;
-        out[LAYER_TOGGLE_MOON_ORBIT] = true;
+        out[LAYER_TOGGLE_DRAW_ORBITS] = true;
         out[LAYER_TOGGLE_SUN] = true;
         out[LAYER_TOGGLE_SUN_FLARE] = false;
         break;
@@ -165,7 +159,7 @@ static void LayerPresetValues(int preset, bool out[LAYER_TOGGLE_COUNT])
         out[LAYER_TOGGLE_CLOUDS] = false;
         out[LAYER_TOGGLE_SKYBOX] = false;
         out[LAYER_TOGGLE_ECLIPTIC] = false;
-        out[LAYER_TOGGLE_MOON_ORBIT] = true;
+        out[LAYER_TOGGLE_DRAW_ORBITS] = true;
         out[LAYER_TOGGLE_SUN] = false;
         out[LAYER_TOGGLE_SUN_FLARE] = false;
         break;
@@ -219,7 +213,7 @@ static void ReadLayerState(UIContext *ctx, AppConfig *cfg, bool cur[LAYER_TOGGLE
     cur[LAYER_TOGGLE_CLOUDS] = cfg->show_clouds;
     cur[LAYER_TOGGLE_SKYBOX] = cfg->show_skybox;
     cur[LAYER_TOGGLE_ECLIPTIC] = *ctx->is_ecliptic_frame;
-    cur[LAYER_TOGGLE_MOON_ORBIT] = ToolSettingGetBool(cfg, LAYERS_KEY_MOON_ORBIT, true);
+    cur[LAYER_TOGGLE_DRAW_ORBITS] = ToolSettingGetBool(cfg, LAYERS_KEY_DRAW_ORBITS, true);
     cur[LAYER_TOGGLE_SUN] = cfg->show_sun;
     /* the flare is only meaningful while the sun is visible, so mirror that gating */
     cur[LAYER_TOGGLE_SUN_FLARE] = cfg->show_sun && cfg->show_sun_flare;
@@ -279,7 +273,7 @@ void ApplyLayerPreset(AppConfig *cfg, int preset, bool *is_ecliptic_frame)
     cfg->show_ecliptic_frame = want[LAYER_TOGGLE_ECLIPTIC];
     if (is_ecliptic_frame)
         *is_ecliptic_frame = want[LAYER_TOGGLE_ECLIPTIC];
-    ToolSettingSetBool(cfg, LAYERS_KEY_MOON_ORBIT, want[LAYER_TOGGLE_MOON_ORBIT]);
+    ToolSettingSetBool(cfg, LAYERS_KEY_DRAW_ORBITS, want[LAYER_TOGGLE_DRAW_ORBITS]);
     cfg->show_sun = want[LAYER_TOGGLE_SUN];
     cfg->show_sun_flare = want[LAYER_TOGGLE_SUN_FLARE];
 
@@ -401,26 +395,6 @@ void DrawPanelLayers(UIContext *ctx, AppConfig *cfg)
                 ToolSettingSetBool(cfg, LAYERS_KEY_FAV_ORBITS_3D, fav_on);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Color favourite (starred) satellites' orbits");
-            ImGui::EndDisabled();
-        }
-
-        // the reference body only affects imported missions; 2D stays Earth-fixed
-        if (EphemCount() > 0)
-        {
-            static const char *kRefLabels[] = { "Earth", "Moon", "Sun" };
-            ImGui::BeginDisabled(*ctx->is_2d_view);
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(ICON_FA_CIRCLE_DOT "  Reference Body");
-            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 88.0f);
-            ImGui::SetNextItemWidth(88.0f);
-            int ref = cfg->reference_body;
-            if (ref < 0 || ref >= REF_BODY_COUNT) ref = 0;
-            if (ImGui::Combo("##layers_ref_body", &ref, kRefLabels, REF_BODY_COUNT))
-                cfg->reference_body = ref;
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Draw orbit paths relative to this body.\n"
-                                  "Moon/Sun remove the wobble of cislunar and interplanetary\n"
-                                  "missions. 3D view only.");
             ImGui::EndDisabled();
         }
 
@@ -682,14 +656,14 @@ void DrawPanelLayers(UIContext *ctx, AppConfig *cfg)
             }
         }
 
-        /* Moon Orbit */
+        /* Draw Orbits (celestial body paths) */
         {
-            bool val = ToolSettingGetBool(cfg, LAYERS_KEY_MOON_ORBIT, true);
+            bool val = ToolSettingGetBool(cfg, LAYERS_KEY_DRAW_ORBITS, true);
             bool prev = val;
-            DrawLayerCheckbox("Moon Orbit", &val, ICON_FA_MOON,
-                              "Show the Moon's geocentric orbital path (3D only).");
+            DrawLayerCheckbox("Draw Orbits", &val, ICON_FA_MOON,
+                              "Show the Moon's geocentric path and, once zoomed far out, Earth's orbit around the Sun. 3D only.");
             if (val != prev)
-                ToolSettingSetBool(cfg, LAYERS_KEY_MOON_ORBIT, val);
+                ToolSettingSetBool(cfg, LAYERS_KEY_DRAW_ORBITS, val);
         }
 
         ImGui::Unindent();
@@ -706,12 +680,7 @@ static Vector2 MapDetailToWorld(MapDetailPoint point, float map_w, float map_h)
     };
 }
 
-/**
- * Draws one MapDetail polyline set (coastlines, borders) in map world space.
- *
- * alpha scales the theme text color; segments that jump the antimeridian are
- * skipped so a polyline wrapping the map edge does not draw a seam across it.
- */
+/* draw one MapDetail polyline set in map world space; antimeridian jumps are skipped to avoid a seam */
 static void DrawMapDetailLines(const SceneContext *sctx, const MapDetailPoint *points,
                                const MapDetailLine *lines, int line_count,
                                float line_width, float alpha)
@@ -740,8 +709,7 @@ static void DrawMapDetailLines(const SceneContext *sctx, const MapDetailPoint *p
 
 /* -- 3D globe rendering of the same overlays ------------------------------- */
 
-/* radial lift (km) that clears the 80x80 Earth mesh's faceting (its chord sag
- * is ~6 km) so the lines sit above the surface instead of z-fighting it */
+/* radial lift (km) clearing the 80x80 Earth mesh's ~6 km chord sag, avoiding z-fighting */
 #define MAP_DETAIL_LIFT_KM 6.5f
 
 #define DETAIL_POINT_COUNT(arr) ((int)(sizeof(arr) / sizeof((arr)[0])))
@@ -789,12 +757,7 @@ static void DrawDetailLines3D(const std::vector<Vector3> &verts,
     rlEnd();
 }
 
-/**
- * Draws coastlines/borders on the 3D globe. The sphere positions are built
- * once; each frame only the sidereal rotation is applied and the segments are
- * submitted as one batched RL_LINES pass, so depth testing occludes the far
- * side against the Earth model drawn before the scene hooks.
- */
+/* draw coastlines/borders on the 3D globe; sphere positions built once, one batched RL_LINES pass per frame */
 static void DrawMapDetailLines3D(const SceneContext *sctx, AppConfig *cfg)
 {
     const bool show_coast = cfg->show_coast_lines;
@@ -939,6 +902,46 @@ static void DrawMoonOrbit3D(const SceneContext *sctx, AppConfig *cfg)
     rlDrawRenderBatchActive();
 }
 
+static float EarthOrbitZoomAlpha(float cam_dist, double epoch)
+{
+    const float au_world = (float)(calculate_sun_distance_km(epoch) / (double)DRAW_SCALE);
+    if (!isfinite(cam_dist) || !isfinite(au_world) || cam_dist <= 0.0f || au_world <= 0.0f)
+        return 0.0f;
+
+    const float d0 = EARTH_ORBIT_FADE_START_AU * au_world;
+    const float d1 = EARTH_ORBIT_FADE_END_AU * au_world;
+    if (cam_dist <= d0) return 0.0f;
+    if (cam_dist >= d1) return 1.0f;
+
+    float t = (cam_dist - d0) / (d1 - d0);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+static void DrawEarthOrbit3D(const SceneContext *sctx, float alpha)
+{
+    Vector3 pts[EARTH_ORBIT_SAMPLES];
+    calculate_earth_orbit(sctx->current_epoch, pts, EARTH_ORBIT_SAMPLES);
+
+    Color col = g_theme.world.orbit;
+    col.a = (unsigned char)(col.a * alpha);
+
+    /* the ring dwarfs the Earth at this zoom, so no per-segment occlusion test */
+    rlDrawRenderBatchActive();
+    rlSetLineWidth(1.5f);
+    rlBegin(RL_LINES);
+    for (int i = 0; i < EARTH_ORBIT_SAMPLES; i++)
+    {
+        Vector3 a = Vector3Scale(pts[i], 1.0f / DRAW_SCALE);
+        Vector3 b = Vector3Scale(pts[(i + 1) % EARTH_ORBIT_SAMPLES], 1.0f / DRAW_SCALE);
+        rlColor4ub(col.r, col.g, col.b, col.a);
+        rlVertex3f(a.x, a.y, a.z);
+        rlVertex3f(b.x, b.y, b.z);
+    }
+    rlEnd();
+    rlSetLineWidth(1.0f);
+    rlDrawRenderBatchActive();
+}
+
 void DrawSceneLayers(SceneContext *sctx, AppConfig *cfg)
 {
     if (sctx->is_2d_view && sctx->camera2d)
@@ -958,10 +961,17 @@ void DrawSceneLayers(SceneContext *sctx, AppConfig *cfg)
             DrawMapGrid3D(sctx, cfg);
     }
 
-    // the Moon orbit line is geocentric; the Moon sphere sits at its true place
-    if (!sctx->is_2d_view &&
-        ToolSettingGetBool(cfg, LAYERS_KEY_MOON_ORBIT, true))
+    // body orbit lines are 3D-only; the Moon orbit is geocentric, Earth's orbit
+    // is heliocentric and only fades in once the camera has pulled far out
+    if (!sctx->is_2d_view && ToolSettingGetBool(cfg, LAYERS_KEY_DRAW_ORBITS, true))
+    {
         DrawMoonOrbit3D(sctx, cfg);
+
+        const float cam_dist = sctx->camera3d ? Vector3Distance(sctx->camera3d->position, sctx->camera3d->target) : 0.0f;
+        const float orbit_alpha = EarthOrbitZoomAlpha(cam_dist, sctx->current_epoch);
+        if (orbit_alpha > 0.001f)
+            DrawEarthOrbit3D(sctx, orbit_alpha);
+    }
 
     if (sctx->is_2d_view && sctx->camera2d && cfg->show_latlon_grid)
     {
@@ -1020,15 +1030,7 @@ void DrawSceneLayers(SceneContext *sctx, AppConfig *cfg)
     LayoutToggleCleanView(); /* sidebars, bottom time bar, menu bar and edge tabs */
 }
 
-/**
- * Numeric lat/lon labels for the 2D grid.
- *
- * Drawn as a screen-space ImGui overlay (after rlImGuiBegin) rather than in the
- * world-space grid pass, because the raylib custom font has no '°' glyph while
- * the ImGui atlas does. Latitude values sit on the left edge of the visible
- * map, longitude values along its top edge; both follow panning and are culled
- * when their grid line leaves the view.
- */
+/* numeric lat/lon labels for the 2D grid, drawn as an ImGui overlay since the raylib font lacks the degree glyph */
 void DrawMapGridLabels(UIContext *ctx, AppConfig *cfg)
 {
     if (!ctx || !cfg || !ctx->camera2d)

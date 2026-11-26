@@ -14,7 +14,8 @@
 typedef enum {
     PROVIDER_CELESTRAK,
     PROVIDER_RETLECTOR,
-    PROVIDER_CUSTOM
+    PROVIDER_CUSTOM,
+    PROVIDER_SPACETRACK   // appended last: keeps persisted ProviderType ints stable
 } ProviderType;
 
 // -- Data Source Definition --------------------------------------------------
@@ -53,9 +54,7 @@ const DataProvider* GetProvider(ProviderType type);
 
 // -- High-Level Fetch --------------------------------------------------------
 
-/** fetch data from a source in the specified format.
- *  handles caching internally (120-min TTL).
- *  returns a FetchResult that must be freed with FreeFetchResult(). */
+/* Fetch data from a source; handles caching (120-min TTL). Free with FreeFetchResult(). */
 FetchResult FetchFromSource(const DataSource *source, OrbitalDataFormat format);
 
 /** free a fetch result */
@@ -63,35 +62,46 @@ void FreeFetchResult(FetchResult *result);
 
 // -- Retlector Group Fetch ---------------------------------------------------
 
-/** fetch available groups from retlector.eu API.
- *  parses the JSON response into RetlectorGroup array.
- *  returns number of groups parsed, or -1 on error. */
+/* Fetch available groups from retlector.eu; returns count parsed, or -1 on error. */
 int FetchRetlectorGroups(RetlectorGroup *groups, int max_groups, long *out_http_code);
 
 // -- Format Detection --------------------------------------------------------
 
 bool tleHasNameLine(const char *data);
 
-/** detect orbital data format from raw content.
- *  examines content signatures in order: XML -> JSON -> KVN -> CSV -> TLE. */
+/* Detect format from content signatures: XML -> JSON -> KVN -> CSV -> TLE. */
 OrbitalDataFormat DetectDataFormat(const char *data, size_t size);
 
 // -- Custom URL Fetch --------------------------------------------------------
 
-/** fetch from a custom URL and auto-detect the format.
- *  the result.format will be set to the detected format. */
+/* Fetch from a custom URL and auto-detect the format. */
 FetchResult FetchFromCustomURL(const char *url);
 
 // -- Custom File Fetch --------------------------------------------------------
 
-/** fetch from a custom file and auto-detect the format.
- *  the result.format will be set to the detected format. */
+/* Fetch from a custom file and auto-detect the format. */
 FetchResult FetchFromCustomFile(const char *filename);
 
 // -- Raw URL Fetch -----------------------------------------------------------
 
 /// raw GET of any URL using the shared curl config (UA, timeouts, retries, proxy)
 FetchResult HttpFetchURL(const char *url);
+
+// -- Generic HTTP request (shared curl config: UA, TLS trust, proxy, timeouts) --
+
+typedef struct {
+    const char *url;
+    const char *post_fields;   // NULL => GET; otherwise application/x-www-form-urlencoded body
+    const char *cookie;        // optional "name=value; name2=value2" sent as CURLOPT_COOKIE
+    char *captured_cookie;     // optional out: all Set-Cookie name=value pairs, ';'-joined
+    size_t captured_cookie_size;
+    bool keep_error_body;
+    bool no_retry_on_429;      // Space-Track treats 429 itself; skip the inner curl retry storm
+} HttpRequest;
+
+/* Perform one request with the same UA/TLS/proxy/retry policy as the built-in fetches.
+   Returns the same FetchResult contract; on transport failure http_code == 0 and curl_code != 0. */
+FetchResult HttpPerform(const HttpRequest *req);
 
 // -- Built-in Source Lists ---------------------------------------------------
 
@@ -100,5 +110,8 @@ extern const int NUM_CELESTRAK_SOURCES;
 
 extern const DataSource RETLECTOR_SOURCES[];
 extern const int NUM_RETLECTOR_SOURCES;
+
+extern const DataSource SPACETRACK_SOURCES[];
+extern const int NUM_SPACETRACK_SOURCES;
 
 #endif // PROVIDER_H

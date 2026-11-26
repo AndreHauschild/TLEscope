@@ -21,6 +21,7 @@
 #include "core/location.h"
 #include "core/discord_rpc.h"
 #include "util/log.h"
+#include "util/log_banner.h"
 #ifdef __APPLE__
 #include "util/window_macos.h"
 #endif
@@ -275,7 +276,10 @@ static const FutureTrackCacheEntry *GetFutureTrackSamples(
         double start_unix = fmax(now_unix, m->t0_unix);
         if (start_unix > m->t1_unix)
             start_unix = m->t1_unix;
-        const double end_unix = m->t1_unix;
+        double period = ephem_period_seconds(m);
+        if (!(period > 0.0))
+            period = (m->t1_unix - m->t0_unix) / 40.0;
+        const double end_unix = fmin(m->t1_unix, start_unix + (double)cfg.orbits_to_draw * period);
         const double denom = (segments > 0) ? (double)segments : 1.0;
         for (int j = 0; j <= segments; j++)
         {
@@ -284,10 +288,9 @@ static const FutureTrackCacheEntry *GetFutureTrackSamples(
             if (!EphemInterp(m, t_unix, &p, &v))
                 p = (Vector3){0};
             const double t_epoch = get_epoch_from_unix(t_unix);
-            slot->times[j] = t_epoch; /* absolute epoch, matching the SGP4 path */
+            slot->times[j] = t_epoch;
             get_map_coordinates(p, epoch_to_gmst(t_epoch), earth_offset, map_w, map_h,
                                 &slot->pts[j].x, &slot->pts[j].y);
-            /* the mission already carries precomputed sub-satellite angles and sunlit state */
             float lat = 0.0f, lon = 0.0f;
             EphemLatLon(m, t_unix, &lat, &lon);
             slot->lat[j] = lat;
@@ -340,44 +343,7 @@ static float OrbitDirectionWidthScale(double phase, float floor = ORBIT_DIR_MIN)
     return OrbitDirectionWidth(phase, anim, GetTime(), floor);
 }
 
-// Reference-body position relative to Earth at t_unix in world units; Earth
-// yields the zero vector, an exact no-op for the transform below.
-static bool ReferenceOffsetAtEpoch(int ref_body, double t_unix, Vector3 *out)
-{
-    *out = Vector3Zero();
-    if (ref_body == 0)
-        return true;
-    if (!isfinite(t_unix))
-        return false;
-    const double t_epoch = get_epoch_from_unix(t_unix);
-    if (!isfinite(t_epoch))
-        return false;
-
-    if (ref_body == 1)
-    {
-        Vector3 moon_km = calculate_moon_position(t_epoch);
-        if (!isfinite(moon_km.x) || !isfinite(moon_km.y) || !isfinite(moon_km.z))
-            return false;
-        *out = Vector3Scale(moon_km, 1.0f / (float)DRAW_SCALE);
-        return isfinite(out->x) && isfinite(out->y) && isfinite(out->z);
-    }
-
-    Vector3 dir = calculate_sun_position(t_epoch);
-    if (!isfinite(dir.x) || !isfinite(dir.y) || !isfinite(dir.z) ||
-        Vector3LengthSqr(dir) < 1e-12f)
-        return false;
-
-    const double dist_km = calculate_sun_distance_km(t_epoch);
-    if (!isfinite(dist_km) || dist_km <= 0.0)
-        return false;
-
-    *out = Vector3Scale(Vector3Normalize(dir), (float)(dist_km / (double)DRAW_SCALE));
-    return isfinite(out->x) && isfinite(out->y) && isfinite(out->z);
-}
-
-// `body_now` is the reference body's Earth-relative position at t_now, sampled
-// once per frame; SGP4 orbits stay Earth-relative by design.
-static void draw_orbit_3d(Satellite *sat, double current_epoch, bool is_highlighted, float alpha, int step, bool apply_sunlit, Vector3 cam_pos, int ref_body, Vector3 body_now, bool body_now_ok)
+static void draw_orbit_3d(Satellite *sat, double current_epoch, bool is_highlighted, float alpha, int step, bool apply_sunlit, Vector3 cam_pos)
 {
     Color orbitColor = ApplyAlpha(is_highlighted ? g_theme.world.orbit_active : g_theme.world.orbit, alpha);
     const float earth_r = EARTH_RADIUS_KM / DRAW_SCALE;
@@ -401,37 +367,45 @@ static void draw_orbit_3d(Satellite *sat, double current_epoch, bool is_highligh
         const double t0 = m->t0_unix;
         const double span = (m->t1_unix > t0) ? (m->t1_unix - t0) : 1.0;
 
-        // per-vertex rebase pos_raw - off(t) + off(now); off(now) anchors it at the craft
-        const bool orbital_reference = ref_body != 0;
+        // update_orbit_cache() already baked body-relative geometry; draw adds the body offset once.
+        Vector3 ref_now = Vector3Zero();
+        if (m->ref_body != REF_BODY_EARTH)
+        {
+            Vector3 off_km;
+            if (reference_body_offset_km(m->ref_body, get_unix_from_epoch(current_epoch), &off_km))
+                ref_now = Vector3Scale(off_km, 1.0f / DRAW_SCALE);
+        }
 
         Vector3 prev_pos = {0};
         for (int i = 0; i < drawn; i++)
         {
             Vector3 raw_pos;
             float phase;
-            const double t = t0 + span * (double)i / (double)(drawn - 1);
+            Vector3 rel_world;
             if (use_cache)
             {
-                Vector3 scaled = sat->orbit_cache[i];
-                raw_pos = Vector3Scale(scaled, DRAW_SCALE);
+                /* the cache is already body-relative (and in world units) */
+                raw_pos = Vector3Scale(sat->orbit_cache[i], DRAW_SCALE);
                 phase = sat->orbit_cache_phase[i];
+                rel_world = sat->orbit_cache[i];
             }
             else
             {
+                const double t = t0 + span * (double)i / (double)(drawn - 1);
                 Vector3 v = {0};
                 if (!EphemInterp(m, t, &raw_pos, &v))
                     break;
                 phase = (float)((t - t0) / span);
+                Vector3 rel_km = raw_pos;
+                if (m->ref_body != REF_BODY_EARTH)
+                {
+                    Vector3 off_km;
+                    if (reference_body_offset_km(m->ref_body, t, &off_km))
+                        rel_km = Vector3Subtract(rel_km, off_km);
+                }
+                rel_world = Vector3Scale(rel_km, 1.0f / DRAW_SCALE);
             }
-            Vector3 pos = Vector3Scale(raw_pos, 1.0f / DRAW_SCALE);
-
-            if (orbital_reference)
-            {
-                Vector3 off_at_t;
-                /* both terms guarded so a bad offset never injects NaN */
-                if (ReferenceOffsetAtEpoch(ref_body, t, &off_at_t) && body_now_ok)
-                    pos = Vector3Add(Vector3Subtract(pos, off_at_t), body_now);
-            }
+            Vector3 pos = Vector3Add(rel_world, ref_now);
 
             if (i > 0)
             {
@@ -532,8 +506,7 @@ static void draw_orbit_3d(Satellite *sat, double current_epoch, bool is_highligh
     }
 }
 
-// same per-frame reference-body anchor as draw_orbit_3d(), so both paths match
-static void draw_orbit_3d_colored(Satellite *sat, double current_epoch, Color color, float alpha, int step, bool apply_sunlit, Vector3 cam_pos, int ref_body, Vector3 body_now, bool body_now_ok)
+static void draw_orbit_3d_colored(Satellite *sat, double current_epoch, Color color, float alpha, int step, bool apply_sunlit, Vector3 cam_pos)
 {
     Color orbitColor = ApplyAlpha(color, alpha);
     // ephem missions are served by the window-sampled cache from update_orbit_cache()
@@ -548,32 +521,27 @@ static void draw_orbit_3d_colored(Satellite *sat, double current_epoch, Color co
         base_sun_dir = Vector3Normalize(calculate_sun_position(current_epoch));
     }
 
-    // same per-vertex rebase as draw_orbit_3d(); phase recovers t = t0 + span * phase
-    const bool orbital_reference = ref_body != 0 && SatIsEphem(sat);
-    EphemMission *em = orbital_reference ? EphemGetById(sat->ephem_id) : NULL;
-    double em_t0 = 0.0, em_span = 1.0;
-    if (em)
+    // the cache already holds body-relative geometry, so add the body's current
+    // offset once; SGP4 orbits are Earth-relative and get the zero vector.
+    Vector3 ref_now = Vector3Zero();
+    if (SatIsEphem(sat))
     {
-        em_t0 = em->t0_unix;
-        em_span = (em->t1_unix > em_t0) ? (em->t1_unix - em_t0) : 1.0;
+        EphemMission *em = EphemGetById(sat->ephem_id);
+        if (em && em->ref_body != REF_BODY_EARTH)
+        {
+            Vector3 off_km;
+            if (reference_body_offset_km(em->ref_body, get_unix_from_epoch(current_epoch), &off_km))
+                ref_now = Vector3Scale(off_km, 1.0f / DRAW_SCALE);
+        }
     }
-    auto rebase_vertex = [&](int idx, Vector3 p) -> Vector3 {
-        if (!orbital_reference || !em || !body_now_ok)
-            return p;
-        const double t = em_t0 + em_span * (double)sat->orbit_cache_phase[idx];
-        Vector3 off_at_t;
-        if (ReferenceOffsetAtEpoch(ref_body, t, &off_at_t))
-            p = Vector3Add(Vector3Subtract(p, off_at_t), body_now);
-        return p;
-    };
 
     rlSetLineWidth(3.0f);
-    Vector3 prev_pos = rebase_vertex(0, sat->orbit_cache[0]);
+    Vector3 prev_pos = Vector3Add(sat->orbit_cache[0], ref_now);
     int cache_size = sat->orbit_cache_resolution;
 
     for (int i = step; i < cache_size; i += step)
     {
-        Vector3 pos = rebase_vertex(i, sat->orbit_cache[i]);
+        Vector3 pos = Vector3Add(sat->orbit_cache[i], ref_now);
         Color drawCol = orbitColor;
         if (cfg.highlight_sunlit && apply_sunlit && !is_sat_eclipsed(Vector3Scale(sat->orbit_cache[i], DRAW_SCALE), base_sun_dir))
             drawCol = ApplyAlpha(g_theme.world.sat_hover, alpha);
@@ -588,7 +556,7 @@ static void draw_orbit_3d_colored(Satellite *sat, double current_epoch, Color co
     {
         Color drawCol = orbitColor;
         int last = cache_size - 1;
-        Vector3 last_pos = rebase_vertex(last, sat->orbit_cache[last]);
+        Vector3 last_pos = Vector3Add(sat->orbit_cache[last], ref_now);
         if (cfg.highlight_sunlit && apply_sunlit && !is_sat_eclipsed(Vector3Scale(sat->orbit_cache[last], DRAW_SCALE), base_sun_dir))
             drawCol = ApplyAlpha(g_theme.world.sat_hover, alpha);
         drawCol = ApplyOrbitDirection(drawCol, sat->orbit_cache_phase[last]);
@@ -738,6 +706,7 @@ static void StartTrackingSat(TargetLock *lock, Satellite **sat, uint32_t *norad,
     *sat = target;
     *norad = target->norad_id_num;
     NotifyPush(NOTIFY_INFO, ICON_FA_SATELLITE, "Currently Tracking: %s", target->name);
+    LOG_INFO("Tracking satellite: %s", target->name);
 }
 
 static void StartTrackingBody(TargetLock *lock, Satellite **sat, uint32_t *norad, TargetLock kind)
@@ -749,6 +718,7 @@ static void StartTrackingBody(TargetLock *lock, Satellite **sat, uint32_t *norad
         NotifyPush(NOTIFY_INFO, ICON_FA_MOON, "Currently Tracking: Moon");
     else
         NotifyPush(NOTIFY_INFO, ICON_FA_GLOBE, "Currently Tracking: Earth");
+    LOG_INFO("Tracking body: %s", kind == LOCK_MOON ? "Moon" : "Earth");
 }
 
 /** user-initiated stop (pan / empty-space double-click); toasts only if tracking */
@@ -760,6 +730,7 @@ static void StopTrackingUser(TargetLock *lock, Satellite **sat, uint32_t *norad)
     *sat = NULL;
     *norad = 0;
     NotifyPush(NOTIFY_INFO, ICON_FA_CROSSHAIRS, "Tracking stopped");
+    LOG_INFO("Tracking stopped");
 }
 
 /** target lost (decay / NaN / data reload); toasts the lost name if known */
@@ -771,9 +742,15 @@ static void StopTrackingLost(TargetLock *lock, Satellite **sat, uint32_t *norad,
     *sat = NULL;
     *norad = 0;
     if (name && name[0])
+    {
         NotifyPush(NOTIFY_WARNING, ICON_FA_CROSSHAIRS, "Tracking stopped: %s lost", name);
+        LOG_WARN("Tracking lost: %s", name);
+    }
     else
+    {
         NotifyPush(NOTIFY_INFO, ICON_FA_CROSSHAIRS, "Tracking stopped");
+        LOG_INFO("Tracking stopped");
+    }
 }
 
 #define WINDOW_MIN_W 480
@@ -819,6 +796,23 @@ static void ClampWindowRectToMonitor(int &x, int &y, int &w, int &h)
 }
 
 static Texture2D g_sunGlowTex = {0};
+
+static Shader g_sunAnamorphicShader = {0};
+static int g_sunAnamorphicEnergyLoc = -1;
+static int g_sunAnamorphicCoreLoc = -1;
+static int g_sunAnamorphicTailLoc = -1;
+static Texture2D g_sunWhiteTex = {0};
+
+static Texture2D SunEnsureWhiteTexture(void)
+{
+    if (g_sunWhiteTex.id == 0)
+    {
+        Image img = GenImageColor(1, 1, WHITE);
+        g_sunWhiteTex = LoadTextureFromImage(img);
+        UnloadImage(img);
+    }
+    return g_sunWhiteTex;
+}
 
 static Texture2D SunEnsureGlowTexture(void)
 {
@@ -881,8 +875,8 @@ static void DrawSunOverlay(Vector3 sunPosWorld, Camera cam, Vector3 camForward,
         Vector3LengthSqr(sunDirWorld) < 1e-12f)
         return;
 
-    float margin_x = g_view3d_w * 0.6f;
-    float margin_y = g_view3d_h * 0.6f;
+    float margin_x = g_view3d_w * 1.5f;
+    float margin_y = g_view3d_h * 1.5f;
     if (sp.x < g_view3d_x - margin_x || sp.x > g_view3d_x + g_view3d_w + margin_x ||
         sp.y < g_view3d_y - margin_y || sp.y > g_view3d_y + g_view3d_h + margin_y)
         return;
@@ -904,7 +898,7 @@ static void DrawSunOverlay(Vector3 sunPosWorld, Camera cam, Vector3 camForward,
                 occlusion = (b - rEarth) / (rAtmo - rEarth);
         }
     }
-    if (occlusion <= 0.0f)
+    if (occlusion <= 0.0f && !cfg.show_sun_anamorphic)
         return;
 
     Vector2 center = { g_view3d_x + g_view3d_w * 0.5f, g_view3d_y + g_view3d_h * 0.5f };
@@ -939,7 +933,7 @@ static void DrawSunOverlay(Vector3 sunPosWorld, Camera cam, Vector3 camForward,
                    (Vector2){ disk, disk }, 0.0f,
                    (Color){ 255, 255, 245, (unsigned char)(255.0f * occlusion) });
 
-    if (cfg.show_sun_flare)
+    if (cfg.show_sun_flare && !(cfg.show_sun_anamorphic && g_sunAnamorphicShader.id != 0))
     {
         float flare = centreness * occlusion;
         if (flare > 0.001f)
@@ -973,6 +967,92 @@ static void DrawSunOverlay(Vector3 sunPosWorld, Camera cam, Vector3 camForward,
     }
 
     EndBlendMode();
+
+    if (cfg.show_sun_anamorphic && g_sunAnamorphicShader.id != 0)
+    {
+        float screenW = (float)GetScreenWidth();
+        float screenH = (float)GetScreenHeight();
+        float w = 2.5f * screenW;
+        float h = fmaxf(0.02f * screenH, 10.0f);
+
+        float toSunLen = Vector3Length(toSun);
+        float camFwdLen = Vector3Length(camForward);
+        float denom = toSunLen * camFwdLen;
+        float cosAngle = (denom > 1e-6f) ? (fwd / denom) : 0.0f;
+        float sizeFactor = Clamp(sqrtf(disk / 48.0f), 0.5f, 1.5f);
+        float angleFactor = powf(fmaxf(cosAngle, 0.0f), 8.0f);
+        float occ = fmaxf(occlusion, 0.05f);
+        float target = sizeFactor * angleFactor * occ * 1.45f;
+
+        static float s_energy = 0.0f;
+        float k = 1.0f - expf(-GetFrameTime() / 0.1f);
+        s_energy += (target - s_energy) * k;
+        float energy = s_energy;
+
+        if (energy > 0.001f)
+        {
+            float coreCol[3] = { 0.55f, 0.80f, 1.00f };
+            float tailCol[3] = { 0.15f, 0.35f, 1.00f };
+
+            BeginBlendMode(BLEND_ADDITIVE);
+
+            // veiling glow around the source
+            float vr = 0.1f * screenH;
+            unsigned char va = (unsigned char)(Clamp(0.4f * energy, 0.0f, 1.0f) * 255.0f);
+            Color vc = { (unsigned char)(coreCol[0] * 255.0f), (unsigned char)(coreCol[1] * 255.0f), 255, va };
+            DrawCircleGradient(sp, vr, vc, (Color){ vc.r, vc.g, vc.b, 0 });
+
+            // optical ghost chain: each element mirrors across centre at its own scale,
+            // with its own coating tint, blur and energy, squashed into anamorphic dashes
+            struct FlareGhost { float t; float blur; float energy; unsigned char r, g, b; };
+            static const FlareGhost ghosts[] = {
+                { 1.35f,  2.0f, 0.18f, 255, 120, 220 }, // front surface, magenta
+                { 0.82f,  4.0f, 0.12f, 120, 255, 150 }, // second element, green
+                { 1.90f,  9.0f, 0.07f, 255, 190, 110 }, // rear group, amber
+                { -0.60f, 14.0f, 0.04f, 255, 120, 220 }, // sensor cover, magenta
+                { 2.60f, 18.0f, 0.03f, 120, 255, 150 }, // deep ghost, green
+            };
+            float baseR = screenH * 0.018f;
+            for (const FlareGhost &g : ghosts)
+            {
+                Vector2 gp = { center.x + (sp.x - center.x) * g.t, center.y + (sp.y - center.y) * g.t };
+                float gr = baseR + g.blur * 1.5f;
+                float amp = g.energy * energy * (baseR / gr);
+                unsigned char ga = (unsigned char)(Clamp(amp, 0.0f, 1.0f) * 255.0f);
+                Color gc = { g.r, g.g, g.b, ga };
+                rlPushMatrix();
+                rlTranslatef(gp.x, gp.y, 0.0f);
+                rlScalef(1.0f, 0.22f, 1.0f);
+                DrawCircleGradient((Vector2){ 0.0f, 0.0f }, gr, gc, (Color){ gc.r, gc.g, gc.b, 0 });
+                rlPopMatrix();
+            }
+
+            // short vertical star at the anchor
+            float vlen = screenH * 0.05f;
+            float vwid = fmaxf(1.5f, screenH * 0.0015f);
+            unsigned char sa = (unsigned char)(Clamp(0.15f * energy, 0.0f, 1.0f) * 255.0f);
+            Color sc = { (unsigned char)(coreCol[0] * 255.0f), (unsigned char)(coreCol[1] * 255.0f), 255, sa };
+            DrawRectangleGradientV((int)(sp.x - vwid * 0.5f), (int)(sp.y - vlen), (int)vwid, (int)vlen,
+                                   (Color){ sc.r, sc.g, sc.b, 0 }, sc);
+            DrawRectangleGradientV((int)(sp.x - vwid * 0.5f), (int)sp.y, (int)vwid, (int)vlen,
+                                   sc, (Color){ sc.r, sc.g, sc.b, 0 });
+
+            EndBlendMode();
+
+            // premultiplied additive streak
+            SetShaderValue(g_sunAnamorphicShader, g_sunAnamorphicEnergyLoc, &energy, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(g_sunAnamorphicShader, g_sunAnamorphicCoreLoc, coreCol, SHADER_UNIFORM_VEC3);
+            SetShaderValue(g_sunAnamorphicShader, g_sunAnamorphicTailLoc, tailCol, SHADER_UNIFORM_VEC3);
+            BeginBlendMode(BLEND_CUSTOM);
+            rlSetBlendFactors(RL_ONE, RL_ONE, RL_FUNC_ADD);
+            BeginShaderMode(g_sunAnamorphicShader);
+            DrawTexturePro(SunEnsureWhiteTexture(), (Rectangle){ 0.0f, 0.0f, 1.0f, 1.0f },
+                           (Rectangle){ sp.x, sp.y, w, h }, (Vector2){ w * 0.5f, h * 0.5f }, 0.0f, WHITE);
+            EndShaderMode();
+            EndBlendMode();
+        }
+    }
+
     EndScissorMode();
 
     rlDrawRenderBatchActive();
@@ -1065,27 +1145,32 @@ int main(int argc, char **argv)
             return RunEphemCheck(argc, argv, i);
     }
 
+#ifndef TLESCOPE_VERSION
+#define TLESCOPE_VERSION "vUnknown"
+#endif
+
     LogInit();
+    LogBanner(kWelcomeBanner, kWelcomeBannerAscii);
+    /* Show the full version string (e.g. "v3.9.2-12-g4f2a1c9-dirty") */
+    LOG_INFO("TLEscope %s starting", TLESCOPE_VERSION);
     AsyncFetchInit();
     SimScanInit();
 
     AppConfigEnsureDirectory();
     LoadAppConfig("settings.json", &cfg);
+    LogConfigureFile(AppConfigPath("TLEscope.log"), cfg.file_log_level, (size_t)cfg.log_file_max_kb * 1024);
     DiscordRpcInit(cfg.discord_rpc_enabled);
     SetUseLocalTime(cfg.use_local_time);
     sat_prop_set_short_period(cfg.prop_use_short_period);
     RotatorLoadSettings(&cfg); /* restore persisted rotator config */
     NotifyLoadSettings(&cfg);  /* restore persisted notification toggles */
 
+    if (AppConfigWasReset())
+        NotifyPush(NOTIFY_WARNING, ICON_FA_TRIANGLE_EXCLAMATION,
+                   "Settings were reset to defaults (incompatible config)");
+
     /* window setup and msaa */
     SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE | FLAG_WINDOW_HIGHDPI);
-
-#ifndef TLESCOPE_VERSION
-#define TLESCOPE_VERSION "vUnknown"
-#endif
-
-    /* Show the full version string (e.g. "v3.9.2-12-g4f2a1c9-dirty") */
-    LOG_INFO("TLEscope %s starting", TLESCOPE_VERSION);
 
     char window_title[128];
     snprintf(window_title, sizeof(window_title), "TLEscope %s", TLESCOPE_VERSION);
@@ -1201,6 +1286,12 @@ int main(int argc, char **argv)
     Shader shaderNight = LoadShaderFromMemory(NULL, Shaders::fsNight);
     int nightIntensityLoc = GetShaderLocation(shaderNight, "intensity");
     Texture2D nightTex = {0};
+
+    // anamorphic sun streak: additive screen-space pass in the 3D viewport
+    g_sunAnamorphicShader = LoadShaderFromMemory(NULL, Shaders::fsAnamorphic);
+    g_sunAnamorphicEnergyLoc = GetShaderLocation(g_sunAnamorphicShader, "uEnergy");
+    g_sunAnamorphicCoreLoc = GetShaderLocation(g_sunAnamorphicShader, "uCoreCol");
+    g_sunAnamorphicTailLoc = GetShaderLocation(g_sunAnamorphicShader, "uTailCol");
 
     Shader shaderCloud = LoadShaderFromMemory(NULL, Shaders::fsCloud3D);
     int sunDirLocCloud = GetShaderLocation(shaderCloud, "sunDir");
@@ -1504,11 +1595,13 @@ int main(int argc, char **argv)
                     saved_multiplier = time_multiplier;
                     time_multiplier = 0.0;
                     NotifyPush(NOTIFY_INFO, ICON_FA_PAUSE, "Time paused");
+                    LOG_INFO("Time paused");
                 }
                 else
                 {
                     time_multiplier = saved_multiplier != 0.0 ? saved_multiplier : 1.0;
                     NotifyPush(NOTIFY_INFO, ICON_FA_PLAY, "Time resumed");
+                    LOG_INFO("Time resumed");
                 }
             }
             
@@ -1553,14 +1646,20 @@ int main(int argc, char **argv)
                 time_multiplier = StepTimeMultiplier(time_multiplier, true);
                 /* only toast on the initial press, not on hold-repeat */
                 if (IsKeyPressed(KEY_PERIOD))
+                {
                     NotifyPush(NOTIFY_INFO, ICON_FA_FORWARD, "Time sped up");
+                    LOG_INFO("Time speed: %.1fx", time_multiplier);
+                }
             }
             if (step_bwd)
             {
                 is_auto_warping = false;
                 time_multiplier = StepTimeMultiplier(time_multiplier, false);
                 if (IsKeyPressed(KEY_COMMA))
+                {
                     NotifyPush(NOTIFY_INFO, ICON_FA_BACKWARD, "Time slowed");
+                    LOG_INFO("Time speed: %.1fx", time_multiplier);
+                }
             }
             if (IsKeyPressed(KEY_M)) {
                 is_2d_view = !is_2d_view;
@@ -1630,12 +1729,14 @@ int main(int argc, char **argv)
                 {
                     current_epoch = get_current_real_time_epoch();
                     NotifyPush(NOTIFY_INFO, ICON_FA_CLOCK, "Time reset to now");
+                    LOG_INFO("Time reset to now");
                 }
                 else
                 {
                     time_multiplier = 1.0;
                     saved_multiplier = 1.0;
                     NotifyPush(NOTIFY_INFO, ICON_FA_CLOCK, "Time speed reset to 1x");
+                    LOG_INFO("Time speed reset to 1x");
                 }
             }
 
@@ -1653,7 +1754,6 @@ int main(int argc, char **argv)
                 SaveAppConfig("settings.json", &cfg);
                 LOG_INFO("Fullscreen toggled");
             }
-
             /* sidebar show/hide shortcuts */
             if (IsKeyPressed(KEY_ONE))
                 LayoutSetSidebarVisible(SIDEBAR_LEFT, !LayoutSidebarVisible(SIDEBAR_LEFT));
@@ -1874,10 +1974,6 @@ int main(int argc, char **argv)
         float moon_pitch = asinf(dirToEarth.y);
         moonModel.transform = MatrixMultiply(MatrixRotateZ(moon_pitch), MatrixRotateY(moon_yaw));
 
-        // only the mission polyline is re-based; without one the body has no effect
-        if (is_2d_view || EphemCount() == 0)
-            cfg.reference_body = 0;
-
         Vector3 sunDirGeocentric = calculate_sun_position(current_epoch);
         double sunDistKm = calculate_sun_distance_km(current_epoch);
         float sunDistWorld = (float)(sunDistKm / (double)DRAW_SCALE);
@@ -1893,10 +1989,6 @@ int main(int argc, char **argv)
         /* the drawn Sun is always geocentric, even when orbits are Moon-relative */
         const Vector3 sun_now_vec = Vector3Scale(Vector3Normalize(sunDirGeocentric), sunDistWorld);
         Vector3 sunPosWorld = sun_now_vec;
-
-        /* off(t_now) in world units; computed once per frame for both orbit paths */
-        Vector3 body_now_anchor = Vector3Zero();
-        const bool body_now_ok = ReferenceOffsetAtEpoch(cfg.reference_body, current_unix, &body_now_anchor);
 
         Vector2 mouseDelta = GetMouseDelta();
         hovered_sat = NULL;
@@ -1944,6 +2036,11 @@ int main(int argc, char **argv)
                 if (wheel != 0 && !is_typing)
                 {
                     target_camera2d_zoom += wheel * 0.1f * target_camera2d_zoom;
+                }
+                /* middle-drag up/down zooms in/out (shift+middle still pans) */
+                if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) && !IsKeyDown(KEY_LEFT_SHIFT) && !is_typing)
+                {
+                    target_camera2d_zoom -= mouseDelta.y * 0.005f * target_camera2d_zoom;
                 }
             }
 
@@ -2030,6 +2127,13 @@ int main(int argc, char **argv)
                             if (target_camDistance < draw_earth_radius + 1.0f)
                                 target_camDistance = draw_earth_radius + 1.0f;
                         }
+                    }
+                    /* middle-drag up/down zooms in/out */
+                    if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE))
+                    {
+                        target_camDistance += mouseDelta.y * 0.005f * target_camDistance;
+                        if (target_camDistance < draw_earth_radius + 1.0f)
+                            target_camDistance = draw_earth_radius + 1.0f;
                     }
                 }
             }
@@ -2265,11 +2369,14 @@ int main(int argc, char **argv)
             float smooth_speed = 10.0f * GetFrameTime();
             if (smooth_speed > 1.0f) smooth_speed = 1.0f; // clamp it so the camera doesnt spin out when alt tabbed
 
-            Camera2DParams.zoom = Lerp(Camera2DParams.zoom, target_camera2d_zoom, smooth_speed);
+            float smooth2d = cfg.camera_smoothing_2d ? smooth_speed : 1.0f;
+            float smooth3d = cfg.camera_smoothing_3d ? smooth_speed : 1.0f;
 
-            camAngleX = Lerp(camAngleX, target_camAngleX, smooth_speed);
-            camAngleY = Lerp(camAngleY, target_camAngleY, smooth_speed);
-            camDistance = Lerp(camDistance, target_camDistance, smooth_speed);
+            Camera2DParams.zoom = Lerp(Camera2DParams.zoom, target_camera2d_zoom, smooth2d);
+
+            camAngleX = Lerp(camAngleX, target_camAngleX, smooth3d);
+            camAngleY = Lerp(camAngleY, target_camAngleY, smooth3d);
+            camDistance = Lerp(camDistance, target_camDistance, smooth3d);
 
             /* follow tracked targets rigidly: lerp lag grows with the time multiplier */
             if (active_lock != LOCK_NONE)
@@ -2279,8 +2386,8 @@ int main(int argc, char **argv)
             }
             else
             {
-                Camera2DParams.target = Vector2Lerp(Camera2DParams.target, target_camera2d_target, smooth_speed);
-                Camera3DParams.target = Vector3Lerp(Camera3DParams.target, target_camera3d_target, smooth_speed);
+                Camera2DParams.target = Vector2Lerp(Camera2DParams.target, target_camera2d_target, smooth2d);
+                Camera3DParams.target = Vector3Lerp(Camera3DParams.target, target_camera3d_target, smooth3d);
             }
             Camera2DParams.target.y = clamp_map_y(Camera2DParams.zoom, Camera2DParams.target.y);
 
@@ -3449,16 +3556,7 @@ int main(int argc, char **argv)
                         {
                             if (pass == 1)
                             {
-                                draw_orbit_3d(&satellites[i], current_epoch, true, sat_alpha, global_orbit_step, apply_sunlit, Camera3DParams.position, cfg.reference_body, body_now_anchor, body_now_ok);
-                                Vector3 draw_pos = Vector3Scale(satellites[i].current_pos, 1.0f / DRAW_SCALE);
-                                float ground_r = draw_earth_radius * 1.001f;
-                                Vector3 ground_pt = Vector3Scale(Vector3Normalize(draw_pos), ground_r);
-                                if (!IsOrbitSegmentOccluded(Camera3DParams.position, ground_pt, draw_pos, draw_earth_radius * 0.995f))
-                                {
-                                    rlDrawRenderBatchActive();
-                                    DrawLine3D(ground_pt, draw_pos, ApplyAlpha(g_theme.world.orbit_active, sat_alpha));
-                                    rlDrawRenderBatchActive();
-                                }
+                                draw_orbit_3d(&satellites[i], current_epoch, true, sat_alpha, global_orbit_step, apply_sunlit, Camera3DParams.position);
                             }
                             continue;
                         }
@@ -3469,7 +3567,7 @@ int main(int argc, char **argv)
                             if (pass == 1)
                             {
                                 Color fav_color = MultiGroundTrackColor(fav_index);
-                                draw_orbit_3d_colored(&satellites[i], current_epoch, fav_color, 0.9f, global_orbit_step, apply_sunlit, Camera3DParams.position, cfg.reference_body, body_now_anchor, body_now_ok);
+                                draw_orbit_3d_colored(&satellites[i], current_epoch, fav_color, 0.9f, global_orbit_step, apply_sunlit, Camera3DParams.position);
                             }
                             continue;
                         }
@@ -3479,7 +3577,7 @@ int main(int argc, char **argv)
                         {
                             if (&satellites[i] != selected_sat && !orbits_dimmed)
                                 continue;
-                            draw_orbit_3d(&satellites[i], current_epoch, false, sat_alpha, global_orbit_step, apply_sunlit, Camera3DParams.position, cfg.reference_body, body_now_anchor, body_now_ok);
+                            draw_orbit_3d(&satellites[i], current_epoch, false, sat_alpha, global_orbit_step, apply_sunlit, Camera3DParams.position);
                         }
                     }
 
@@ -3859,6 +3957,7 @@ int main(int argc, char **argv)
     }
 
     /* cleanup and save */
+    LOG_INFO("TLEscope shutting down");
     UnloadTexture(logoTex);
     UnloadTexture(logoLTex);
     UnloadTexture(satIcon);
@@ -3877,6 +3976,10 @@ int main(int argc, char **argv)
     UnloadShader(shader2D);
     UnloadShader(earthSolidShader);
     UnloadShader(shaderNight);
+    if (g_sunAnamorphicShader.id != 0)
+        UnloadShader(g_sunAnamorphicShader);
+    if (g_sunWhiteTex.id != 0)
+        UnloadTexture(g_sunWhiteTex);
     if (nightTex.id != 0)
         UnloadTexture(nightTex);
     UnloadShader(shaderCloud);
@@ -3899,6 +4002,7 @@ int main(int argc, char **argv)
     SaveSatSelection(&cfg);    /* copy live active-satellite selection into cfg */
     cfg.show_ecliptic_frame = is_ecliptic_frame; /* copy live ecliptic-frame state into cfg */
     SaveAppConfig("settings.json", &cfg);
+    LOG_INFO("Settings saved to settings.json");
 
     SaveDataSelections();
     SaveFavorites("favorites.json"); /* persist favorite satellites */

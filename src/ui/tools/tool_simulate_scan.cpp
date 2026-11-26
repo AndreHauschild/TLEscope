@@ -1,14 +1,3 @@
-/*
- * tool_simulate_scan.cpp - "Imager Simulation" tab of the Transit Overview modal.
- *
- * Two modes share one equirectangular Earth map:
- *   - Whiskbroom / Pushbroom: the full AOS->LOS cross-track swath
- *   - Single-shot: camera ground footprint + photo-frame overlay at a chosen time
- *
- * All geometry is drawn with ImGui draw-list primitives over the map canvas;
- * the textured background is an ImGui::Image of a lazily loaded Earth texture.
- */
-
 #include "tools.h"
 #include "tools_settings.h"
 #include "tools_common.h"
@@ -1563,8 +1552,7 @@ static bool ComputeStripJob(const SimScanJob *job, SimScanResult *res)
         rs.along = Vector3Normalize(Vector3CrossProduct(P, rs.cross));
         if (job->skew_rad != 0.0f)
         {
-            /* tilt the scan plane about the along-track (velocity) axis: the plane
-               stays perpendicular to `along`, so only the column angle changes */
+            /* tilt the scan plane about the along-track axis; only the column angle changes */
             Vector3 axis = Vector3Normalize(V);
             rs.nadir = RotAxis(rs.nadir, axis, job->skew_rad);
             rs.cross = RotAxis(rs.cross, axis, job->skew_rad);
@@ -2461,11 +2449,13 @@ void DrawTransitSimulateScanTab(UIContext *ctx, AppConfig *cfg)
             {
                 snprintf(s_export_status, sizeof(s_export_status), "Saved %s", path);
                 NotifyPush(NOTIFY_SUCCESS, ICON_FA_FILE_IMAGE, "Saved %s", path);
+                LOG_INFO("Exported image: %s", path);
             }
             else
             {
                 snprintf(s_export_status, sizeof(s_export_status), "Export failed: %s", path);
                 NotifyPush(NOTIFY_ERROR, ICON_FA_TRIANGLE_EXCLAMATION, "Export failed: %s", path);
+                LOG_ERROR("Export failed: %s", path);
             }
         }
 
@@ -2629,11 +2619,13 @@ void DrawTransitSimulateScanTab(UIContext *ctx, AppConfig *cfg)
             {
                 snprintf(s_export_status, sizeof(s_export_status), "Saved %s", path);
                 NotifyPush(NOTIFY_SUCCESS, ICON_FA_FILE_IMAGE, "Saved %s", path);
+                LOG_INFO("Exported image: %s", path);
             }
             else
             {
                 snprintf(s_export_status, sizeof(s_export_status), "Export failed: %s", path);
                 NotifyPush(NOTIFY_ERROR, ICON_FA_TRIANGLE_EXCLAMATION, "Export failed: %s", path);
+                LOG_ERROR("Export failed: %s", path);
             }
         }
 

@@ -1,5 +1,6 @@
 #include "file_dialog.h"
 #include "portable-file-dialogs.h"
+#include "util/log.h"
 
 #include <cstdio>
 
@@ -58,9 +59,8 @@ void FileDialog::open(const std::string& title,
 
     if (!pfd::settings::available())
     {
-        std::fprintf(stderr,
-            "FileDialog: no native dialog backend found "
-            "(Linux: install zenity or kdialog)\n");
+        LOG_WARN("FileDialog: no native dialog backend found "
+                 "(Linux: install zenity or kdialog)");
         return;
     }
 
@@ -69,9 +69,16 @@ void FileDialog::open(const std::string& title,
 
     if (!fileName_.empty())
     {
+
+        // Linux/zenity workaround: pass a file path so the dialog opens inside the last folder.
+#if __linux__
+        startPath = fileName_;
+#else
         const size_t sep = fileName_.find_last_of("/\\");
         startPath = (sep == std::string::npos) ? pfd::path::home()
                                                : fileName_.substr(0, sep);
+#endif
+
     }
     if (startPath.empty())
         startPath = pfd::path::home();

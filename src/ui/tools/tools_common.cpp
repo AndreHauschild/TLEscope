@@ -1,8 +1,4 @@
-// tools_common.cpp - Shared helpers and state for tool panels
-//
-// Contains the data-source selection (shopping-cart) persistence and the
-// small UI helpers (InfoRow, RA/Dec formatting, case-insensitive search)
-// that several tool panels rely on.
+// Shared helpers and state for tool panels.
 
 #include "tools_common.h"
 #include "core/astro.h"
@@ -27,11 +23,6 @@
 
 #include "imgui.h"
 #include "IconsFontAwesome6.h"
-
-// -- Shared state -----------------------------------------------------------
-
-bool log_auto_scroll = true;
-bool log_show_timestamps = false;  // timestamps hidden by default (cleaner)
 
 // -- Helpers ----------------------------------------------------------------
 
@@ -223,10 +214,7 @@ static bool g_pull_running = false;  // a pull started via DataSourcesStartPull(
 static int g_pull_total = 0;         // number of sources in that pull
 static bool g_pull_auto = false;     // the in-flight pull was auto-triggered
 
-// A pull wipes the satellite array but not the ephem registry, so snapshot the
-// mission rows before the wipe and re-append them after. One row per registry
-// slot is the bound: sizing to MAX_SATELLITES_HARD_CAP would reserve hundreds of
-// megabytes for rows that can never exist.
+// snapshot ephem mission rows across a pull wipe; bound to registry slots, not MAX_SATELLITES_HARD_CAP
 static Satellite g_pull_ephem_snap[EPHEM_MAX_MISSIONS];
 static int g_pull_ephem_snap_count = 0;
 
@@ -365,17 +353,30 @@ void DataSourcesSetAutoPull(bool is_auto) { g_pull_auto = is_auto; }
 
 bool DataSourcesStartPull(AppConfig *cfg, UIContext *ctx)
 {
-    int count = DataSelectionCount();
-    if (count == 0)
-    {
-        LOG_INFO("No sources selected to pull");
-        return false;
-    }
-
-    /* never start a second pull while one is already in flight */
     if (AsyncFetchBusy())
         return false;
 
+    int count = DataSelectionCount();
+    if (count == 0)
+    {
+        LOG_INFO("No sources selected to pull - wiping all loaded data");
+
+        if (ctx && ctx->selected_sat)
+            *ctx->selected_sat = NULL;
+
+        sat_count = 0;
+        EphemClear();
+
+        SaveSatSelection(cfg);
+
+        SaveOrbitalData("data.json", satellites, sat_count);
+
+        NotifyPush(NOTIFY_INFO, ICON_FA_TRASH_CAN,
+                   "No sources selected - cleared all loaded data");
+        return false;
+    }
+
+    LOG_INFO("Starting data pull: %d source(s)", count);
     g_pull_total = count;
     g_pull_auto = false;
 
@@ -434,6 +435,7 @@ void DataSourcesPollPullCompletion(AppConfig *cfg)
 
     // distinguish success/partial/total failure so a 24/7 operator notices silent refresh failures
     int failed = AsyncFetchTakeFailureCount();
+    LOG_INFO("Data pull complete: %d satellites, %d failed", sat_count, failed);
     if (sat_count <= 0)
     {
         /* nothing arrived at all: offline or every selected source failed */

@@ -1,13 +1,3 @@
-/*
- * ui.cpp - Dear ImGui UI implementation
- *
- * This file implements the UI layer using Dear ImGui + rlImGui.
- * It contains the modal dialogs (first-run, exit, data warning, update
- * check, help, about) and the main DrawGUI entry point. The sidebar /
- * panel workspace lives in ui_layout.cpp; the tool panels live in
- * ui/tools/.
- */
-
 #include "ui.h"
 #include "ui_layout.h"
 #include "ui_input.h"
@@ -16,6 +6,7 @@
 #include "notifications.h"
 #include "hints.h"
 #include "tutorial.h"
+#include "log_window.h"
 #include "core/astro.h"
 #include "core/config.h"
 #include "core/theme.h"
@@ -135,6 +126,7 @@ bool UIModalAnyOpen(void)
 {
     return show_help || show_about || show_tle_warning || show_exit_dialog ||
            g_ui.update_available || g_ui.transit_overview_open ||
+           g_ui.rot_show_window ||
            LayoutSettingsOpen() || LayoutToolsOpen();
 }
 
@@ -146,14 +138,16 @@ void UICloseTopModal(AppConfig *cfg)
 
     /* popup name must match the string passed to BeginPopupModal()/OpenPopup() */
     struct { const char *name; bool *flag; } kModalFlags[] = {
-        { "Exit?",                &show_exit_dialog          },
-        { "Help",                 &show_help                 },
-        { "About TLEscope",       &show_about                },
-        { "Re-pull stale data",   &show_tle_warning          },
-        { "Update Available",     &g_ui.update_available     },
-        { "Transit Overview",     &g_ui.transit_overview_open },
-        { "Settings",             &g_layout.settings_open    },
-        { "Manage Tools",         &g_layout.tools_open       },
+        { ICON_FA_DOOR_OPEN "  Exit?",                 &show_exit_dialog          },
+        { ICON_FA_CIRCLE_QUESTION "  Help",            &show_help                 },
+        { ICON_FA_CIRCLE_INFO "  About TLEscope",      &show_about                },
+        { ICON_FA_ROTATE "  Re-pull stale data",       &show_tle_warning          },
+        { ICON_FA_DOWNLOAD "  Update Available",       &g_ui.update_available     },
+        { ICON_FA_SATELLITE_DISH "  Transit Overview", &g_ui.transit_overview_open },
+        { ICON_FA_GEAR "  Settings",                   &g_layout.settings_open    },
+        { ICON_FA_SCREWDRIVER_WRENCH "  Manage Tools", &g_layout.tools_open       },
+        { ICON_FA_LIST "  Log",                        &g_ui.show_log_window      },
+        { ICON_FA_SATELLITE_DISH "  Antenna / Rotator", &g_ui.rot_show_window      },
     };
 
     for (const auto &entry : kModalFlags)
@@ -630,22 +624,25 @@ static void DrawHelpModal(UIContext *ctx, AppConfig *cfg)
     (void)ctx;
     (void)cfg;
     if (show_help)
-        ImGui::OpenPopup("Help");
+        ImGui::OpenPopup(ICON_FA_CIRCLE_QUESTION "  Help");
 
-    if (ImGui::BeginPopupModal("Help", &show_help, ImGuiWindowFlags_AlwaysAutoResize))
+    if (ImGui::BeginPopupModal(ICON_FA_CIRCLE_QUESTION "  Help", &show_help, ImGuiWindowFlags_AlwaysAutoResize))
     {
         ImGui::Text("TLEscope v%s", TLESCOPE_VERSION);
         ImGui::Separator();
         ImGui::Text("Controls:");
         ImGui::BulletText("Space: Pause/Resume time");
         ImGui::BulletText("Scroll: Zoom in/out");
-        ImGui::BulletText("Middle mouse: Pan");
+        ImGui::BulletText("Middle mouse drag up/down: Zoom in/out");
+        ImGui::BulletText("Shift + middle mouse: Pan");
         ImGui::BulletText("Left click: Select satellite");
         ImGui::BulletText("Right click: Orbit camera");
         ImGui::Separator();
         ImGui::Text("Keyboard Shortcuts:");
         ImGui::BulletText("M: Toggle 2D/3D");
         ImGui::BulletText("H: Toggle clean view (hide/show panels)");
+        ImGui::BulletText("1: Toggle left sidebar");
+        ImGui::BulletText("2: Toggle right sidebar");
         ImGui::Separator();
         if (ImGui::Button("GitHub Repository"))
         {
@@ -667,14 +664,13 @@ static void DrawAboutModal(UIContext *ctx, AppConfig *cfg)
     (void)ctx;
     (void)cfg;
     if (show_about)
-        ImGui::OpenPopup("About TLEscope");
+        ImGui::OpenPopup(ICON_FA_CIRCLE_INFO "  About TLEscope");
 
-    if (ImGui::BeginPopupModal("About TLEscope", &show_about, ImGuiWindowFlags_AlwaysAutoResize))
+    if (ImGui::BeginPopupModal(ICON_FA_CIRCLE_INFO "  About TLEscope", &show_about, ImGuiWindowFlags_AlwaysAutoResize))
     {
         ImGui::Text("TLEscope v%s", TLESCOPE_VERSION);
         ImGui::Separator();
-        ImGui::TextWrapped("A real-time satellite tracking and orbit simulation tool.");
-        ImGui::TextWrapped("TLE / OMM orbital data, 3D globe, passes, polar plots and more.");
+        ImGui::TextWrapped("Satellite tracker for live OMM/TLE GP data - 3D globe, 2D ground tracks, pass prediction, terminator & LOS coverage. Tiny native C++ app for Windows/macOS/Linux. The modern Gpredict alternative.");
         ImGui::Separator();
         if (ImGui::Button("GitHub Repository"))
         {
@@ -763,7 +759,7 @@ static void DrawDataWarning(UIContext *ctx, AppConfig *cfg)
 
     /* the `]` key (ToggleTLEWarning) also drives show_tle_warning */
     if (show_tle_warning)
-        ImGui::OpenPopup("Re-pull stale data");
+        ImGui::OpenPopup(ICON_FA_ROTATE "  Re-pull stale data");
 
     const char *title = ICON_FA_ROTATE "  Re-pull stale data?";
     char line1[192];
@@ -791,7 +787,7 @@ static void DrawDataWarning(UIContext *ctx, AppConfig *cfg)
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, pad));
 
-    if (ImGui::BeginPopupModal("Re-pull stale data", &show_tle_warning, ImGuiWindowFlags_AlwaysAutoResize))
+    if (ImGui::BeginPopupModal(ICON_FA_ROTATE "  Re-pull stale data", &show_tle_warning, ImGuiWindowFlags_AlwaysAutoResize))
     {
         const float win_w = ImGui::GetWindowWidth();
 
@@ -849,9 +845,9 @@ static void DrawUpdateCheck(UIContext *ctx, AppConfig *cfg)
     if (g_ui.update_available && popup_start == 0.0) popup_start = GetTime();
 
     if (g_ui.update_available && GetTime() - popup_start < 10.0)
-        ImGui::OpenPopup("Update Available");
+        ImGui::OpenPopup(ICON_FA_DOWNLOAD "  Update Available");
 
-    if (ImGui::BeginPopupModal("Update Available", &g_ui.update_available, ImGuiWindowFlags_AlwaysAutoResize))
+    if (ImGui::BeginPopupModal(ICON_FA_DOWNLOAD "  Update Available", &g_ui.update_available, ImGuiWindowFlags_AlwaysAutoResize))
     {
         ImGui::Text("A new version of TLEscope is available!");
         ImGui::Text("%s", g_ui.latest_version_str);
@@ -876,7 +872,7 @@ static void DrawExitDialog(UIContext *ctx, AppConfig *cfg)
 {
     (void)cfg;
     if (show_exit_dialog)
-        ImGui::OpenPopup("Exit?");
+        ImGui::OpenPopup(ICON_FA_DOOR_OPEN "  Exit?");
 
     const char *title = ICON_FA_DOOR_OPEN "  Exit TLEscope?";
     const char *message = "Are you sure you want to close TLEscope?";
@@ -901,7 +897,7 @@ static void DrawExitDialog(UIContext *ctx, AppConfig *cfg)
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, pad));
 
     /* p_open wired to show_exit_dialog so the Escape router can close it */
-    if (ImGui::BeginPopupModal("Exit?", &show_exit_dialog, ImGuiWindowFlags_AlwaysAutoResize))
+    if (ImGui::BeginPopupModal(ICON_FA_DOOR_OPEN "  Exit?", &show_exit_dialog, ImGuiWindowFlags_AlwaysAutoResize))
     {
         const float win_w = ImGui::GetWindowWidth();
 
@@ -1048,6 +1044,9 @@ void DrawGUI(UIContext *ctx, AppConfig *cfg, Font customFont)
     /* sidebar workspace (left actions / right inspector) + transparent center */
     DrawUILayout(ctx, cfg);
 
+    /* modal titles are left-aligned (the theme's global title alignment centers them) */
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowTitleAlign, ImVec2(0.0f, 0.5f));
+
     /* settings modal (centered, dimmed/blurred background) */
     DrawSettingsModal(ctx, cfg);
 
@@ -1057,7 +1056,10 @@ void DrawGUI(UIContext *ctx, AppConfig *cfg, Font customFont)
     /* transit overview modal (large, root-level: must not live in the sidebar) */
     DrawTransitOverviewModal(ctx, cfg);
 
+    /* antenna / rotator modal (large, root-level) */
     DrawTransitRotatorWindow(ctx, cfg);
+
+    ImGui::PopStyleVar();
 
     /* home-location picking hint banner (the settings modal is closed while picking) */
     if (*ctx->picking_home)
@@ -1079,13 +1081,16 @@ void DrawGUI(UIContext *ctx, AppConfig *cfg, Font customFont)
         }
     }
 
-    /* modals */
+    /* modals (left-aligned titles) */
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowTitleAlign, ImVec2(0.0f, 0.5f));
     DrawDataWarning(ctx, cfg);
     DrawUpdateCheck(ctx, cfg);
     DrawHelpModal(ctx, cfg);
     DrawAboutModal(ctx, cfg);
     DrawExitDialog(ctx, cfg);
     DrawTutorialOverlay(ctx, cfg);
+    DrawLogWindow(ctx, cfg);
+    ImGui::PopStyleVar();
 
     /* notification toasts: top-right, non-blocking */
     NotifyUpdate(ImGui::GetIO().DeltaTime);
