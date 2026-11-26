@@ -17,11 +17,153 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <filesystem>
+
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+
 #include <raylib.h>
 
 static void copy_str(char *dst, size_t dst_size, const std::string &src)
 {
     snprintf(dst, dst_size, "%s", src.c_str());
+}
+
+static bool IsAbsolutePath(const char *name)
+{
+    if (name == NULL || name[0] == '\0')
+        return false;
+    if (name[0] == '/' || name[0] == '\\')
+        return true;
+    return isalpha((unsigned char)name[0]) && name[1] == ':' &&
+           (name[2] == '/' || name[2] == '\\');
+}
+
+static std::string TrimTrailingSeparators(std::string path)
+{
+    while (!path.empty() && (path.back() == '/' || path.back() == '\\'))
+        path.pop_back();
+    return path;
+}
+
+static std::string WithTrailingSeparator(std::string path)
+{
+    if (path.empty())
+        return path;
+    if (path.back() != '/' && path.back() != '\\')
+#ifdef _WIN32
+        path += '\\';
+#else
+        path += '/';
+#endif
+    return path;
+}
+
+static std::string GetEnvPath(const char *name)
+{
+    const char *value = getenv(name);
+    return (value && value[0]) ? std::string(value) : std::string();
+}
+
+static bool DirectoryWritable(const std::string &dir)
+{
+    std::string path = TrimTrailingSeparators(dir);
+    const char *cpath = path.empty() ? "." : path.c_str();
+#ifdef _WIN32
+    return _access(cpath, 2) == 0;
+#else
+    return access(cpath, W_OK) == 0;
+#endif
+}
+
+static std::string UserStateDir(void)
+{
+#ifdef _WIN32
+    std::string dir = GetEnvPath("LOCALAPPDATA");
+    if (dir.empty())
+        dir = GetEnvPath("USERPROFILE");
+    if (!dir.empty())
+        return WithTrailingSeparator(dir + "\\TLEscope");
+#elif defined(__APPLE__)
+    std::string home = GetEnvPath("HOME");
+    if (!home.empty() && IsAbsolutePath(home.c_str()))
+        return WithTrailingSeparator(home + "/Library/Application Support/TLEscope");
+#else
+    std::string xdg = GetEnvPath("XDG_CONFIG_HOME");
+    if (!xdg.empty() && IsAbsolutePath(xdg.c_str()))
+        return WithTrailingSeparator(xdg + "/TLEscope");
+    std::string home = GetEnvPath("HOME");
+    if (!home.empty() && IsAbsolutePath(home.c_str()))
+        return WithTrailingSeparator(home + "/.config/TLEscope");
+#endif
+    return std::string();
+}
+
+static std::string ExecutableStateDir(void)
+{
+    const char *dir = GetApplicationDirectory();
+    return WithTrailingSeparator((dir && dir[0]) ? std::string(dir) : std::string("./"));
+}
+
+static std::string g_state_dir;
+static bool g_state_dir_resolved = false;
+static bool g_state_dir_private = false;
+
+static void ResolveStateDir(void)
+{
+    if (g_state_dir_resolved)
+        return;
+    g_state_dir_resolved = true;
+
+    std::string override_dir = GetEnvPath("TLESCOPE_CONFIG_DIR");
+    if (!override_dir.empty() && IsAbsolutePath(override_dir.c_str()))
+    {
+        g_state_dir = WithTrailingSeparator(override_dir);
+        return;
+    }
+
+    std::string exe_dir = ExecutableStateDir();
+    if (DirectoryWritable(exe_dir))
+    {
+        g_state_dir = exe_dir;
+        return;
+    }
+
+    std::string user_dir = UserStateDir();
+    g_state_dir_private = !user_dir.empty();
+    g_state_dir = g_state_dir_private ? user_dir : exe_dir;
+}
+
+bool AppConfigEnsureDirectory(void)
+{
+    ResolveStateDir();
+
+    std::string dir = TrimTrailingSeparators(g_state_dir);
+    if (dir.empty())
+        return true;
+
+    std::error_code ec;
+    if (std::filesystem::is_directory(dir, ec))
+        return true;
+
+    std::filesystem::create_directories(dir, ec);
+    if (ec)
+    {
+        LOG_ERROR("Failed to create config directory %s: %s", dir.c_str(), ec.message().c_str());
+        return false;
+    }
+
+    if (g_state_dir_private)
+    {
+        std::filesystem::permissions(dir, std::filesystem::perms::owner_all,
+                                     std::filesystem::perm_options::replace, ec);
+        if (ec)
+            LOG_WARN("Failed to set permissions on config directory %s: %s", dir.c_str(), ec.message().c_str());
+    }
+    return true;
 }
 
 // rotating buffer pool so back-to-back calls do not clobber each other
@@ -32,17 +174,16 @@ const char *AppConfigPath(const char *name)
     if (name == NULL)
         return name;
 
-    // drive-letter paths and roots are absolute
-    bool absolute = (name[0] == '/' || name[0] == '\\') ||
-                    (isalpha((unsigned char)name[0]) && name[1] == ':' &&
-                     (name[2] == '/' || name[2] == '\\'));
-    if (absolute)
+    if (IsAbsolutePath(name))
         return name;
 
-    const char *dir = GetApplicationDirectory(); // includes trailing separator
+    ResolveStateDir();
+
     char *out = bufs[idx];
     idx = (idx + 1) % 4;
-    snprintf(out, sizeof(bufs[0]), "%s%s", dir ? dir : "", name);
+    int written = snprintf(out, sizeof(bufs[0]), "%s%s", g_state_dir.c_str(), name);
+    if (written < 0 || (size_t)written >= sizeof(bufs[0]))
+        LOG_ERROR("Config path too long: %s%s", g_state_dir.c_str(), name);
     return out;
 }
 

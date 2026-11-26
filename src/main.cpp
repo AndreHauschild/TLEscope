@@ -1069,6 +1069,7 @@ int main(int argc, char **argv)
     AsyncFetchInit();
     SimScanInit();
 
+    AppConfigEnsureDirectory();
     LoadAppConfig("settings.json", &cfg);
     DiscordRpcInit(cfg.discord_rpc_enabled);
     SetUseLocalTime(cfg.use_local_time);
