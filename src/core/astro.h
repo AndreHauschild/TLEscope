@@ -119,9 +119,9 @@ void SetUseLocalTime(bool use_local);
 bool GetUseLocalTime(void);
 void epoch_to_local_fields(double epoch, int *year, int *day, int *hour, int *min, int *sec);
 double local_fields_to_epoch(int year, int day, int hour, int min, int sec);
-void update_orbit_cache(Satellite *sat, double current_epoch);
-bool is_orbit_cache_valid(Satellite *sat, Vector3 current_pos, float drift_threshold_km);
-int calculate_orbit_cache_resolution(double eccentricity);
+/* Bake helpers. */
+void ephem_bake_window(EphemMission *m, double current_epoch, int n);
+void sgp4_bake_highlight(const Satellite *s, Vector3 *out_pts, int n, double current_epoch);
 
 double ephem_period_seconds(const EphemMission *m);
 

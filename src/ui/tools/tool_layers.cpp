@@ -871,6 +871,8 @@ static void DrawMoonOrbit3D(const SceneContext *sctx, AppConfig *cfg)
     const float earth_r = sctx->draw_earth_radius;
     const Vector3 cam_pos = sctx->camera3d ? sctx->camera3d->position : Vector3Zero();
 
+    const OccluderSphere earth_only[1] = { { Vector3Zero(), earth_r } };
+
     /* sample 0 is the Moon's current position, so phase advances along the direction of travel */
     const bool dir_on = ToolSettingGetBool(cfg, LAYERS_KEY_ORBIT_DIRECTION, true);
     const bool dir_anim = dir_on && ToolSettingGetBool(cfg, LAYERS_KEY_ORBIT_DIRECTION_ANIM, false);
@@ -884,7 +886,7 @@ static void DrawMoonOrbit3D(const SceneContext *sctx, AppConfig *cfg)
         Vector3 a = Vector3Scale(pts[i], 1.0f / DRAW_SCALE);
         Vector3 b = Vector3Scale(pts[(i + 1) % MOON_ORBIT_SAMPLES], 1.0f / DRAW_SCALE);
 
-        if (IsOrbitSegmentOccluded(cam_pos, a, b, earth_r))
+        if (IsSegmentOccludedByBody(cam_pos, a, b, earth_only, 1))
             continue;
 
         unsigned char alpha = col.a;

@@ -108,13 +108,8 @@ void DrawClickableRADec(const char *label, double deg_value, int *format_var, bo
 
 /* -- Orbit direction-of-motion styling ------------------------------------- */
 
-/* tuning constants (see OrbitDirectionIntensity) */
-#define ORBIT_DIR_MIN          0.18f /* base alpha multiplier for dimmed/unselected orbits */
-#define ORBIT_DIR_MIN_SELECTED 0.45f /* base alpha for the selected orbit: brighter than a dimmed orbit, still leaves a trail gradient */
-#define ORBIT_DIR_TRAIL_LEN    0.30  /* highlighted trail length behind the satellite, in orbits */
-#define ORBIT_DIR_ANIM_TAU     0.10  /* animated pulse tail length, in orbits      */
-#define ORBIT_DIR_ANIM_SPEED   0.30  /* animated pulse sweeps per second           */
-#define ORBIT_DIR_WIDTH_MAX    2.5f  /* thickest line-width multiplier (2D only)   */
+/* tuning constants (see OrbitDirectionIntensity); shared with the GLSL orbit shader so CPU and GPU ramps use the same numbers */
+#include "render/orbit_dir_constants.h"
 
 // direction-of-motion alpha multiplier for one orbit point; phase is the signed fraction of an orbit (positive = ahead)
 float OrbitDirectionIntensity(double phase, bool animated, double anim_time,

@@ -190,6 +190,10 @@ typedef struct
     double gmst_deg;
     float map_w;
     float map_h;
+    /* blocking bodies in draw units, for screen-space label occlusion (see OccluderSphere) */
+    float draw_earth_radius;
+    float draw_moon_radius;
+    Vector3 moon_pos_world;
     Camera2D *camera2d;
     Camera3D *camera3d;
 } UIContext;
@@ -219,6 +223,21 @@ Color ApplyAlpha(Color c, float alpha);
 void DrawUIText(Font font, const char *text, float x, float y, float size, Color color);
 double ClampTimeMultiplier(double v);
 double StepTimeMultiplier(double current, bool increase);
+
+/* A blocking body in draw units: the Earth is a sphere at the origin, the Moon one at its
+   current position. Callers build a small fixed array once per frame and pass it down. */
+struct OccluderSphere {
+    Vector3 center;
+    float   radius;
+};
+
+/* true if any body blocks the camera->target segment (no sqrt, one compare per body) */
+bool IsOccludedByBody(Vector3 camPos, Vector3 targetPos, const OccluderSphere *bodies, int body_count);
+
+/* true if any body blocks the a-b segment; tests the closest approach of the whole segment */
+bool IsSegmentOccludedByBody(Vector3 camPos, Vector3 a, Vector3 b, const OccluderSphere *bodies, int body_count);
+
+/* Earth-only wrappers, kept so existing call sites compile unchanged */
 bool IsOccludedByEarth(Vector3 camPos, Vector3 targetPos, float earthRadius);
 bool IsOrbitSegmentOccluded(Vector3 camPos, Vector3 a, Vector3 b, float earthRadius);
 

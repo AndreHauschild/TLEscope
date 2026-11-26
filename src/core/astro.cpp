@@ -634,30 +634,6 @@ double ephem_period_seconds(const EphemMission *m)
     return 2.0 * PI * sqrt(a * a * a / (double)MU);
 }
 
-/** calculates cache resolution based on orbital eccentricity */
-int calculate_orbit_cache_resolution(double eccentricity)
-{
-    if (eccentricity < 0.05)
-        return 180;
-    if (eccentricity < 0.3)
-        return 270;
-    return 361;
-}
-
-/** checks if cached orbit is still valid based on satellite drift */
-bool is_orbit_cache_valid(Satellite *sat, Vector3 current_pos, float drift_threshold_km)
-{
-    if (!sat->orbit_cached)
-        return false;
-
-    /* ephem window follows "now": refresh on the round-robin pass */
-    if (sat->kind == SAT_KIND_EPHEM)
-        return false;
-
-    float drift = Vector3Distance(sat->cached_orbit_base_pos, current_pos);
-    return drift < drift_threshold_km;
-}
-
 /** solves Kepler's equation M = E - e*sin(E) for E (Newton, valid for e < 1) */
 static double solve_kepler_eccentric(double M, double e)
 {
@@ -730,87 +706,93 @@ void orbit_adaptive_sample_times(const Satellite *sat, double start_epoch, int n
 /* orbits to bake around "now" for a tabulated mission (no config access in this TU) */
 #define EPHEM_DRAW_ORBITS 3.0
 
-/** bakes the future orbital path into a vertex buffer so sgp4 isnt re-run every frame */
-void update_orbit_cache(Satellite *sat, double current_epoch)
+/** Bake the mission's ephemeris across a few orbits around "now", body-relative, storing draw-unit points and per-point phase; `n <= 0` selects ORBIT_CACHE_SIZE. */
+void ephem_bake_window(EphemMission *m, double current_epoch, int n)
 {
-    if (sat->kind == SAT_KIND_EPHEM)
+    if (!m)
+        return;
+
+    const int res = (n > 0) ? n : ORBIT_CACHE_SIZE;
+    if (res < 2)
     {
-        EphemMission *m = EphemGetById(sat->ephem_id);
-        if (!m)
-        {
-            sat->orbit_cached = false;
-            sat->orbit_cache_resolution = 0;
-            return;
-        }
-        const int res = ORBIT_CACHE_SIZE;
-        const double now_unix = get_unix_from_epoch(current_epoch);
-
-        /* window = a few orbits around "now", clamped to the mission */
-        double period = ephem_period_seconds(m);
-        if (!(period > 0.0))
-            period = (m->t1_unix - m->t0_unix) / 40.0;
-        const double half = 0.5 * (double)EPHEM_DRAW_ORBITS * period;
-
-        double t_start = fmax(m->t0_unix, now_unix - half);
-        double t_end   = fmin(m->t1_unix, now_unix + half);
-        if (!(t_end > t_start))
-        {
-            t_start = m->t0_unix;
-            t_end   = m->t1_unix;
-        }
-        const double span = t_end - t_start;
-
-        for (int i = 0; i < res; i++)
-        {
-            const double t = t_start + span * (double)i / (double)(res - 1);
-            Vector3 p = {0}, v = {0};
-            if (!EphemInterp(m, t, &p, &v))
-                p = (Vector3){0};
-            /* Bake body-relative geometry: pos_rel(t) = pos_geo(t) - off(t). */
-            if (m->ref_body != REF_BODY_EARTH)
-            {
-                Vector3 off_km;
-                if (reference_body_offset_km(m->ref_body, t, &off_km))
-                    p = Vector3Subtract(p, off_km);
-            }
-            sat->orbit_cache[i] = Vector3Scale(p, 1.0f / DRAW_SCALE);
-            sat->orbit_cache_phase[i] = (float)((t - now_unix) / period);
-        }
-
-        sat->orbit_cache_resolution = res;
-        sat->cached_orbit_base_pos = calculate_position(sat, get_unix_from_epoch(current_epoch));
-        sat->cached_orbit_epoch = current_epoch;
-        sat->orbit_cached = true;
+        m->orbit_pts.clear();
+        m->orbit_phase.clear();
+        m->cache_valid = false;
         return;
     }
 
-    int new_res = calculate_orbit_cache_resolution(sat->eccentricity);
-    if (new_res != sat->orbit_cache_resolution)
+    const double now_unix = get_unix_from_epoch(current_epoch);
+
+    /* window = a few orbits around "now", clamped to the mission */
+    double period = ephem_period_seconds(m);
+    if (!(period > 0.0))
+        period = (m->t1_unix - m->t0_unix) / 40.0;
+    const double half = 0.5 * (double)EPHEM_DRAW_ORBITS * period;
+
+    double t_start = fmax(m->t0_unix, now_unix - half);
+    double t_end   = fmin(m->t1_unix, now_unix + half);
+    if (!(t_end > t_start))
     {
-        LOG_DEBUG("Orbit cache resolution changed for %s: %d -> %d pts",
-                  sat->name, sat->orbit_cache_resolution, new_res);
-        sat->orbit_cache_resolution = new_res;
+        t_start = m->t0_unix;
+        t_end   = m->t1_unix;
+    }
+    const double span = t_end - t_start;
+
+    m->orbit_pts.assign((size_t)res, (Vector3){0});
+    m->orbit_phase.assign((size_t)res, 0.0f);
+
+    for (int i = 0; i < res; i++)
+    {
+        const double t = t_start + span * (double)i / (double)(res - 1);
+        Vector3 p = {0}, v = {0};
+        if (!EphemInterp(m, t, &p, &v))
+            p = (Vector3){0};
+        /* Bake body-relative geometry: pos_rel(t) = pos_geo(t) - off(t). */
+        if (m->ref_body != REF_BODY_EARTH)
+        {
+            Vector3 off_km;
+            if (reference_body_offset_km(m->ref_body, t, &off_km))
+                p = Vector3Subtract(p, off_km);
+        }
+        m->orbit_pts[(size_t)i] = Vector3Scale(p, 1.0f / DRAW_SCALE);
+        m->orbit_phase[(size_t)i] = (float)((t - now_unix) / period);
     }
 
-    double period_days = (2.0 * PI / sat->mean_motion) / 86400.0;
-    if (!(period_days > 0.0))
-        period_days = 1.0 / 1440.0;
+    m->cache_valid = true;
+}
+
+/** SGP4 sampler for the highlighted satellite: n draw-unit points into a caller-owned buffer, zero-filled when empty; sampled from `current_epoch` so it stays in phase with the marker. */
+void sgp4_bake_highlight(const Satellite *s, Vector3 *out_pts, int n, double current_epoch)
+{
+    if (!out_pts || n <= 0)
+        return;
+    if (!s || !SatHasTracks(s) || s->kind == SAT_KIND_EPHEM)
+    {
+        for (int i = 0; i < n; i++)
+            out_pts[i] = (Vector3){0};
+        return;
+    }
 
     double sample_times[ORBIT_CACHE_SIZE];
-    orbit_adaptive_sample_times(sat, current_epoch, sat->orbit_cache_resolution, 1.0, sample_times);
-
-    for (int i = 0; i < sat->orbit_cache_resolution; i++)
+    const int res = (n > ORBIT_CACHE_SIZE) ? ORBIT_CACHE_SIZE : n;
+    if (res < 2)
     {
-        double t = sample_times[i];
-        double t_unix = get_unix_from_epoch(t);
-        sat->orbit_cache[i] = Vector3Scale(calculate_position(sat, t_unix), 1.0f / DRAW_SCALE);
-        sat->orbit_cache_phase[i] = (float)((t - current_epoch) / period_days);
+        for (int i = 0; i < n; i++)
+            out_pts[i] = (Vector3){0};
+        return;
     }
 
-    double current_unix = get_unix_from_epoch(current_epoch);
-    sat->cached_orbit_base_pos = calculate_position(sat, current_unix);
-    sat->cached_orbit_epoch = current_epoch;
-    sat->orbit_cached = true;
+    /* epoch days; start from "now" so the first point lands on the marker. */
+    const double start_epoch = current_epoch;
+    orbit_adaptive_sample_times(s, start_epoch, res, 1.0, sample_times);
+
+    for (int i = 0; i < res; i++)
+    {
+        const double t_unix = get_unix_from_epoch(sample_times[i]);
+        out_pts[i] = Vector3Scale(sat_prop_position(s, t_unix), 1.0f / DRAW_SCALE);
+    }
+    for (int i = res; i < n; i++)
+        out_pts[i] = out_pts[res - 1];
 }
 
 /** converts raw orbital data into azimuth/elevation for a specific ground station */

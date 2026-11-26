@@ -176,16 +176,11 @@ typedef struct
     double semi_major_axis;
     double bstar;               // B* drag term (decimal, not TLE-encoded)
     Vector3 current_pos;
+    Vector3 current_vel;   // km/s, ECI; filled once per frame by the propagation pass
 
     struct elsetrec satrec;
     SatPropState prop;          // cheap per-frame propagation state
 
-    Vector3 orbit_cache[ORBIT_CACHE_SIZE];
-    int orbit_cache_resolution;  // how many points are valid
-    float orbit_cache_phase[ORBIT_CACHE_SIZE];  // per-sample orbit phase (fraction of a period from the cache start)
-    Vector3 cached_orbit_base_pos;  // position when cache was last calculated
-    double cached_orbit_epoch;  // epoch when cache was last calculated
-    bool orbit_cached;
     bool is_active;
     SatKind kind;                // how this satellite's state is produced
     int ephem_id;                // registry id when kind == SAT_KIND_EPHEM
@@ -193,6 +188,9 @@ typedef struct
 
     OrbitalDataMeta data_meta;  // provenance of this satellite's data
 } Satellite;
+
+// The struct is memset/memcpy'd wholesale (storage.cpp, astro.cpp, async_fetch.cpp), so every member must stay POD.
+static_assert(sizeof(Satellite) < 1600, "Satellite grew unexpectedly");
 
 typedef struct
 {
@@ -359,7 +357,6 @@ typedef struct
     float ui_scale;
     float earth_rotation_offset;
     float orbits_to_draw;
-    float orbit_cache_drift_threshold_km;  // recalculate if satellite drifts more than this (default 50 km)
     bool show_clouds;
     bool show_night_lights;
     bool show_markers;
