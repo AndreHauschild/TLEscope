@@ -10,7 +10,7 @@
 
 // -- Credentials -------------------------------------------------------------
 
-/** load identity/password from spacetrack.json next to the executable;
+/** load identity/password from spacetrack.json in the writable config directory;
     returns false when absent or unreadable (not an error worth a toast) */
 bool SpacetrackLoadCredentials(char *identity, size_t identity_size,
                                char *password, size_t password_size);

@@ -31,7 +31,7 @@ TLEscope is a satellite visualization and tracking tool designed to transform or
 - **Online Data Fetching**: Fetch orbital data directly from:
   - [CelesTrak](https://celestrak.org/) — built-in source groups (stations, visual, weather, etc.)
   - [ReTLEctor](https://github.com/MrTalon63/retlector) — CelesTrak mirror for frequent queries
-  - [Space-Track](https://www.space-track.org/) — requires a free account; supports built-in presets and arbitrary SPACE-TRACK GP predicates. Your identity and password are stored in plain text in [`spacetrack.json`](spacetrack.json) next to the executable (permissions are set to `0600` on POSIX) — the session itself is kept in memory only. Please respect Space-Track's published limits (30 requests/minute, 300/hour); TLEscope paces requests at one per 2 seconds and caps a pull at 25 requests.
+  - [Space-Track](https://www.space-track.org/) — requires a free account; supports built-in presets and arbitrary SPACE-TRACK GP predicates. Your identity and password are stored in plain text in [`spacetrack.json`](spacetrack.json) in the writable config directory (permissions are set to `0600` on POSIX) — the session itself is kept in memory only. Please respect Space-Track's published limits (30 requests/minute, 300/hour); TLEscope paces requests at one per 2 seconds and caps a pull at 25 requests.
   - Custom data sources with configurable URLs and preferred formats
 
 - **Geostationary Drift Analysis**
@@ -146,7 +146,7 @@ make windows-arm64
 | `make windows` | Build for Windows x86_64 (cross-compile or native) |
 | `make windows-arm64` | Build for Windows ARM64 (MSYS2 CLANGARM64) |
 | `make win-installer` | Build Windows executable + NSIS installer |
-| `make install` | System-wide install to `/opt/TLEscope` |
+| `make install` | System-wide install to `/opt/TLEscope` (user settings stay in the XDG config dir) |
 | `make uninstall` | Remove system-wide installation |
 | `make clean` | Remove build artifacts |
 
@@ -154,10 +154,16 @@ make windows-arm64
 
 ```sh
 make linux
-sudo make install          # Installs to /opt/TLEscope
+sudo make install          # Installs read-only files to /opt/TLEscope
+# Settings are written to ${XDG_CONFIG_HOME:-$HOME/.config}/TLEscope
 # Now you can run 'TLEscope' from anywhere
-sudo make uninstall        # Removes the installation
+sudo make uninstall        # Removes the installation; user settings are kept
 ```
+
+Portable builds keep settings beside the executable. Installed builds use the
+per-user directory above, or `TLESCOPE_CONFIG_DIR` when set. To remove user
+settings too, delete the directory explicitly. For a rootless install, override
+`INSTALL_DIR`, `LINK_DIR`, and `APP_DIR`.
 
 
 ### **Credits**

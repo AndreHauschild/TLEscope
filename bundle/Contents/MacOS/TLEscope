@@ -6,6 +6,8 @@ RESOURCE_DIR="$SCRIPT_DIR/../Resources"
 USER_DIR="$HOME/Library/Application Support/TLEscope"
 
 mkdir -p "$USER_DIR"
+chmod 700 "$USER_DIR"
+export TLESCOPE_CONFIG_DIR="$USER_DIR"
 ln -sfn "$RESOURCE_DIR/themes" "$USER_DIR/themes"
 
 cd "$USER_DIR"

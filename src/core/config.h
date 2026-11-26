@@ -16,7 +16,9 @@ int GetLegacyReferenceBodyDefault(void);
 /** true when the last LoadAppConfig reset an incompatible config to defaults */
 bool AppConfigWasReset(void);
 
-// anchor filename to the exe dir, absolute paths pass through
+bool AppConfigEnsureDirectory(void);
+
+// resolve a settings/state filename, absolute paths pass through
 // returns a rotating static buffer, copy it to keep it
 const char *AppConfigPath(const char *name);
 

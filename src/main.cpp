@@ -1156,6 +1156,7 @@ int main(int argc, char **argv)
     AsyncFetchInit();
     SimScanInit();
 
+    AppConfigEnsureDirectory();
     LoadAppConfig("settings.json", &cfg);
     LogConfigureFile(AppConfigPath("TLEscope.log"), cfg.file_log_level, (size_t)cfg.log_file_max_kb * 1024);
     DiscordRpcInit(cfg.discord_rpc_enabled);

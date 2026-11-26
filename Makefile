@@ -240,11 +240,13 @@ install:
 	chmod 755 $(DESTDIR)$(INSTALL_DIR)/TLEscope
 	install -d $(DESTDIR)$(LINK_DIR)
 	@echo '#!/bin/sh' > $(DESTDIR)$(LINK_DIR)/TLEscope
-	@echo 'USER_DIR="$${XDG_CONFIG_HOME:-$$HOME/.config}/TLEscope"' >> $(DESTDIR)$(LINK_DIR)/TLEscope
+	@echo 'if [ -z "$$HOME" ]; then echo "HOME must be set" >&2; exit 1; fi' >> $(DESTDIR)$(LINK_DIR)/TLEscope
+	@echo 'case "$$XDG_CONFIG_HOME" in /*) ;; *) XDG_CONFIG_HOME="$$HOME/.config";; esac' >> $(DESTDIR)$(LINK_DIR)/TLEscope
+	@echo 'USER_DIR="$$XDG_CONFIG_HOME/TLEscope"' >> $(DESTDIR)$(LINK_DIR)/TLEscope
 	@echo 'mkdir -p "$$USER_DIR"' >> $(DESTDIR)$(LINK_DIR)/TLEscope
+	@echo 'chmod 700 "$$USER_DIR"' >> $(DESTDIR)$(LINK_DIR)/TLEscope
+	@echo 'export TLESCOPE_CONFIG_DIR="$$USER_DIR"' >> $(DESTDIR)$(LINK_DIR)/TLEscope
 	@echo 'ln -sfn "$(INSTALL_DIR)/themes" "$$USER_DIR/themes"' >> $(DESTDIR)$(LINK_DIR)/TLEscope
-	@echo 'if [ ! -f "$$USER_DIR/settings.json" ] && [ -f "$(INSTALL_DIR)/settings.json" ]; then cp "$(INSTALL_DIR)/settings.json" "$$USER_DIR/settings.json"; fi' >> $(DESTDIR)$(LINK_DIR)/TLEscope
-	@echo 'if [ ! -f "$$USER_DIR/data.tle" ] && [ -f "$(INSTALL_DIR)/data.tle" ]; then cp "$(INSTALL_DIR)/data.tle" "$$USER_DIR/data.tle"; fi' >> $(DESTDIR)$(LINK_DIR)/TLEscope
 	@echo 'cd "$$USER_DIR" && exec "$(INSTALL_DIR)/TLEscope" "$$@"' >> $(DESTDIR)$(LINK_DIR)/TLEscope
 	chmod 755 $(DESTDIR)$(LINK_DIR)/TLEscope
 	install -d $(DESTDIR)$(APP_DIR)
