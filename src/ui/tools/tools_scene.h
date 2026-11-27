@@ -15,6 +15,7 @@ typedef struct
     double gmst_deg;              /* Greenwich mean sidereal time    */
     float earth_rotation_offset;  /* cfg.earth_rotation_offset       */
     float draw_earth_radius;      /* EARTH_RADIUS_KM / DRAW_SCALE    */
+    float draw_moon_radius;       /* MOON_RADIUS_KM / DRAW_SCALE     */
     float map_w, map_h;           /* 2D map dimensions               */
     Vector3 sun_dir_world;        /* unit vector toward the sun      */
     Vector3 moon_pos_world;       /* moon position in draw space     */

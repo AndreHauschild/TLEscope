@@ -1160,26 +1160,77 @@ bool IsUITyping(void) { return ImGui::GetCurrentContext() ? ImGui::IsAnyItemActi
 void ToggleTLEWarning(void) { show_tle_warning = !show_tle_warning; }
 bool IsMouseOverUI(AppConfig *cfg) { (void)cfg; return ImGui::GetCurrentContext() ? (ImGui::IsWindowHovered(ImGuiFocusedFlags_AnyWindow) || ImGui::IsAnyItemHovered()) : false; }
 
-/** earth occlusion test: true if the camera->target segment passes through the earth sphere */
-bool IsOccludedByEarth(Vector3 camPos, Vector3 targetPos, float earthRadius)
+/** body occlusion test: true if any blocking body intersects the camera->target segment.
+    Computes the closest approach with dot products only, so there is no sqrt and no
+    normalisation; one compare per body. */
+bool IsOccludedByBody(Vector3 camPos, Vector3 targetPos, const OccluderSphere *bodies, int body_count)
 {
+    if (!bodies || body_count <= 0)
+        return false;
+
     Vector3 camToTarget = Vector3Subtract(targetPos, camPos);
     float segLenSq = Vector3DotProduct(camToTarget, camToTarget);
-    if (segLenSq <= 0.0f) return false;
-    /* parameter of the closest point on the segment to the earth center (origin) */
-    float t = -Vector3DotProduct(camPos, camToTarget) / segLenSq;
-    if (t < 0.0f) t = 0.0f;
-    if (t > 1.0f) t = 1.0f;
-    Vector3 closest = Vector3Add(camPos, Vector3Scale(camToTarget, t));
-    float closestDist = Vector3Length(closest);
-    return closestDist < earthRadius;
+    if (segLenSq <= 0.0f)
+        return false;
+
+    for (int i = 0; i < body_count; i++) {
+        const OccluderSphere &body = bodies[i];
+        if (!(body.radius > 0.0f))
+            continue;
+        /* parameter of the closest point on the segment to the body centre */
+        Vector3 camToBody = Vector3Subtract(body.center, camPos);
+        float t = Vector3DotProduct(camToBody, camToTarget) / segLenSq;
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        Vector3 closest = Vector3Add(camPos, Vector3Scale(camToTarget, t));
+        Vector3 closestToBody = Vector3Subtract(closest, body.center);
+        if (Vector3DotProduct(closestToBody, closestToBody) < body.radius * body.radius)
+            return true;
+    }
+    return false;
 }
 
-/** true if the earth blocks the view of the a-b segment; endpoints and midpoint are tested */
+/** true if any blocking body intersects the a-b segment.
+    The segment is tested as a whole rather than at sampled points, so a body between two
+    distant samples (a long chord at low LOD) still hides the segment. */
+bool IsSegmentOccludedByBody(Vector3 camPos, Vector3 a, Vector3 b, const OccluderSphere *bodies, int body_count)
+{
+    if (!bodies || body_count <= 0)
+        return false;
+
+    Vector3 camToA = Vector3Subtract(a, camPos);
+    Vector3 camToB = Vector3Subtract(b, camPos);
+    Vector3 seg = Vector3Subtract(camToB, camToA);
+    float segLenSq = Vector3DotProduct(seg, seg);
+
+    for (int i = 0; i < body_count; i++) {
+        const OccluderSphere &body = bodies[i];
+        if (!(body.radius > 0.0f))
+            continue;
+        /* the camera sits outside every body, so the segment is blocked when it comes
+           closer to the centre than the radius anywhere along its length */
+        Vector3 camToBody = Vector3Subtract(body.center, camPos);
+        float t = (segLenSq > 1e-12f) ? Vector3DotProduct(camToBody, seg) / segLenSq : 0.0f;
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        Vector3 closest = Vector3Add(camToA, Vector3Scale(seg, t));
+        Vector3 closestToBody = Vector3Subtract(closest, camToBody);
+        if (Vector3DotProduct(closestToBody, closestToBody) < body.radius * body.radius)
+            return true;
+    }
+    return false;
+}
+
+/** earth occlusion test: thin wrapper over the body predicate */
+bool IsOccludedByEarth(Vector3 camPos, Vector3 targetPos, float earthRadius)
+{
+    const OccluderSphere earth = { Vector3Zero(), earthRadius };
+    return IsOccludedByBody(camPos, targetPos, &earth, 1);
+}
+
+/** earth occlusion test for a segment: thin wrapper over the body predicate */
 bool IsOrbitSegmentOccluded(Vector3 camPos, Vector3 a, Vector3 b, float earthRadius)
 {
-    if (IsOccludedByEarth(camPos, a, earthRadius)) return true;
-    if (IsOccludedByEarth(camPos, b, earthRadius)) return true;
-    Vector3 mid = Vector3Scale(Vector3Add(a, b), 0.5f);
-    return IsOccludedByEarth(camPos, mid, earthRadius);
+    const OccluderSphere earth = { Vector3Zero(), earthRadius };
+    return IsSegmentOccludedByBody(camPos, a, b, &earth, 1);
 }

@@ -9,6 +9,14 @@ static bool g_use_short_period = true;
 
 void sat_prop_set_short_period(bool enabled) { g_use_short_period = enabled; }
 
+// -- SGP4 call instrumentation ----------------------------------------------
+std::atomic<uint64_t> g_sgp4_call_count{0};
+
+uint64_t sgp4_call_count_get()
+{
+    return g_sgp4_call_count.load(std::memory_order_relaxed);
+}
+
 // copy the reusable SGP4 coefficients + epoch mean elements into prop
 static void sat_prop_capture(Satellite *sat)
 {
@@ -252,6 +260,7 @@ void sat_prop_state(const Satellite *sat, double unix, Vector3 *out_pos, Vector3
     if (p->is_deep_space)
     {
         // deep-space needs resonance + lunar-solar periodics: full SGP4
+        g_sgp4_call_count.fetch_add(1, std::memory_order_relaxed);
         struct elsetrec *rec = (struct elsetrec *)&sat->satrec;
         double tsince = (unix - sat->epoch_unix) / 60.0;
         sgp4(rec, tsince, ro, vo);
@@ -264,6 +273,7 @@ void sat_prop_state(const Satellite *sat, double unix, Vector3 *out_pos, Vector3
     }
     else
     {
+        g_sgp4_call_count.fetch_add(1, std::memory_order_relaxed);
         double t = (unix - sat->epoch_unix) / 60.0;
         prop_compute(p, t, ro, vo, NULL);
     }

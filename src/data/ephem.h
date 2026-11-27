@@ -32,6 +32,11 @@ typedef struct
     uint32_t norad_id_num;      /* numeric fake NORAD id for legacy paths */
     int ref_body;               /* RefBody: 0 = Earth, 1 = Moon, 2 = Sun */
     std::vector<EphemSample> s; /* sorted by t_unix, at least 2 entries for interpolation */
+
+    /* owned 3D polyline cache */
+    std::vector<Vector3> orbit_pts;   /* cached polyline, draw units */
+    std::vector<float>   orbit_phase; /* per-point phase [0,1) */
+    bool  cache_valid = false;
 } EphemMission;
 
 /* -- Registry --------------------------------------------------------------- */

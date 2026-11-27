@@ -3,6 +3,15 @@
 
 #include "types.h"
 
+#include <atomic>
+#include <cstdint>
+
+// -- SGP4 call instrumentation: counts actual SGP4 propagations only ---------
+extern std::atomic<uint64_t> g_sgp4_call_count;
+
+// relaxed load of the current counter value
+uint64_t sgp4_call_count_get();
+
 // mean elements at a given time; angles/rates in SGP4 native units, sma_km in km
 typedef struct {
     double sma_km;

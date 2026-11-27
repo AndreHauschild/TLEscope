@@ -191,10 +191,17 @@ static int EphemCommitPending(UIContext *ctx, const char *name, const char *targ
                 snprintf(satellites[i].data_meta.source_name,
                          sizeof(satellites[i].data_meta.source_name),
                          "Horizons %s", m.target[0] ? m.target : m.name);
-                /* the body may have changed on refresh: force a re-bake */
-                satellites[i].orbit_cached = false;
                 break;
             }
+        }
+
+        /* mission-level cache: clear stale geometry unconditionally after a Horizons refresh, covering a mission with no Satellite row yet */
+        EphemMission *refreshed = EphemGetById(existing_id);
+        if (refreshed)
+        {
+            refreshed->orbit_pts.clear();
+            refreshed->orbit_phase.clear();
+            refreshed->cache_valid = false;
         }
 
         SaveOrbitalData("data.json", satellites, sat_count);

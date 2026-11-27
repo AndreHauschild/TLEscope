@@ -87,7 +87,7 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
     float size = ImGui::GetFontSize() * size_mult;
 
     float ui_scale = cfg->ui_scale;
-    float icon_half = 12.0f * ui_scale; /* half of the 24px sat/marker icon */
+    float icon_half = 12.0f * ui_scale * cfg->sat_icon_scale; /* half of the 24px sat/marker icon */
     float pad = UIPx(4.0f);             /* gap between icon and text */
 
     std::vector<LabelCandidate> cands;
@@ -194,11 +194,15 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
             Vector3 draw_pos = Vector3Scale(s.current_pos, 1.0f / DRAW_SCALE);
             Vector3 toTarget = Vector3Subtract(draw_pos, ctx->camera3d->position);
             Vector3 camForward = Vector3Normalize(Vector3Subtract(ctx->camera3d->target, ctx->camera3d->position));
-            float draw_earth_radius = EARTH_RADIUS_KM / DRAW_SCALE;
             if (Vector3DotProduct(toTarget, camForward) <= 0.0f) continue;
-            // Earth occlusion only matters while the icon dominates (see dots_dominate)
+            // body occlusion only matters while the icon dominates (see dots_dominate);
+            // the Moon must hide a label just as the Earth does
+            const OccluderSphere bodies[2] = {
+                { Vector3Zero(), ctx->draw_earth_radius },
+                { ctx->moon_pos_world, ctx->draw_moon_radius },
+            };
             if (!sat_dot_dominates &&
-                IsOccludedByEarth(ctx->camera3d->position, draw_pos, draw_earth_radius))
+                IsOccludedByBody(ctx->camera3d->position, draw_pos, bodies, 2))
                 continue;
             Vector2 sp = WorldToScreenViewport3D(draw_pos, *ctx->camera3d);
             anchor = ImVec2(sp.x, sp.y);
@@ -239,8 +243,11 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
 
             if (!is_2d && ctx->camera3d)
             {
-                float draw_earth_radius = EARTH_RADIUS_KM / DRAW_SCALE;
-                if (!IsOccludedByEarth(ctx->camera3d->position, draw_p, draw_earth_radius))
+                const OccluderSphere bodies[2] = {
+                    { Vector3Zero(), ctx->draw_earth_radius },
+                    { ctx->moon_pos_world, ctx->draw_moon_radius },
+                };
+                if (!IsOccludedByBody(ctx->camera3d->position, draw_p, bodies, 2))
                 {
                     Vector2 sp = WorldToScreenViewport3D(draw_p, *ctx->camera3d);
                     LabelCandidate c;
@@ -253,7 +260,7 @@ void DrawSceneLabels(UIContext *ctx, AppConfig *cfg)
                     c.alpha = label_alpha;
                     cands.push_back(c);
                 }
-                if (!IsOccludedByEarth(ctx->camera3d->position, draw_a, draw_earth_radius))
+                if (!IsOccludedByBody(ctx->camera3d->position, draw_a, bodies, 2))
                 {
                     Vector2 sp = WorldToScreenViewport3D(draw_a, *ctx->camera3d);
                     LabelCandidate c;
