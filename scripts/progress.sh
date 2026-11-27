@@ -17,13 +17,14 @@ if [ "$TOTAL" -eq 0 ]; then TOTAL=1; fi
 
 # increment the counter (flock so it doesnt crap out on parallel building)
 if command -v flock &>/dev/null; then
-    (
-        flock -x 200
-        c=$(($(cat "$COUNTER_FILE" 2>/dev/null || echo 0) + 1))
-        echo "$c" > "$COUNTER_FILE"
-    ) 200>"${COUNTER_FILE}.lock"
-    # Re-read after the subshell
-    COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo 1)
+    COUNT=$(
+        {
+            flock -x 200
+            c=$(($(cat "$COUNTER_FILE" 2>/dev/null || echo 0) + 1))
+            echo "$c" > "$COUNTER_FILE"
+            echo "$c"
+        } 200>"${COUNTER_FILE}.lock"
+    )
 else
     COUNT=$(($(cat "$COUNTER_FILE" 2>/dev/null || echo 0) + 1))
     echo "$COUNT" > "$COUNTER_FILE"

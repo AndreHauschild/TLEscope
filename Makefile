@@ -1,6 +1,12 @@
 GIT_VERSION     := $(shell scripts/version.sh describe 2>/dev/null || echo "vUnknown")
 GIT_VERSION_NUM := $(shell scripts/version.sh num 2>/dev/null || echo "0.0.0.0")
 
+# Parallel Linux builds by default; override with -jN or JOBS=N
+JOBS ?= $(shell nproc 2>/dev/null || echo 1)
+ifneq (,$(filter linux all,$(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)))
+MAKEFLAGS += -j$(JOBS)
+endif
+
 CC_LINUX = g++
 CXXFLAGS   = -Wall -Wextra -std=c++20 -O2 -Isrc -Ilib -Ilib/nlohmann/single_include -Ilib/imgui -Ilib/rlImGui -Ilib/rlImGui/extras -Ilib/portable-file-dialogs -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -Wno-sign-compare -Wno-stringop-truncation -Wno-format-truncation -Wno-maybe-uninitialized -Wno-narrowing -Wno-missing-field-initializers -DTLESCOPE_VERSION=\"$(GIT_VERSION)\" -DImDrawIdx='unsigned int'
 
