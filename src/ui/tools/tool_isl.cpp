@@ -97,7 +97,7 @@ bool LinkSchedule::read(const std::string &filename)
 
     if (!file.is_open())
     {
-        LOG_ERROR("Cannot open ISL schedule file: %s", filename);
+        LOG_ERROR("Cannot open ISL schedule file: %s", filename.c_str());
         return false;
     }
 
