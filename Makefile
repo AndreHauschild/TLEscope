@@ -81,17 +81,22 @@ OBJ_WIN      = $(SRC:src/%.cpp=build_win/%.o) $(IMGUI_SRC:lib/imgui/%.cpp=build_
 
 # a progress bar!
 TOTAL_OBJ := $(words $(OBJ))
-$(shell echo "$(TOTAL_OBJ)" > /tmp/tlescope_build_total; echo "0" > /tmp/tlescope_build_counter)
 TOTAL_WIN_OBJ := $(words $(OBJ_WIN))
-$(shell echo "$(TOTAL_WIN_OBJ)" > /tmp/tlescope_build_total_win; echo "0" > /tmp/tlescope_build_counter_win)
 
 # auto-generated header dependencies (-MMD): editing a header rebuilds every
 # object that includes it, so a struct change can't leave stale objects behind
 -include $(OBJ:.o=.d) $(OBJ_WIN:.o=.d)
 
-.PHONY: all raylib clean-libs linux macos windows windows-arm64 win-installer clean build bin install uninstall test
+.PHONY: all raylib clean-libs linux macos windows windows-arm64 win-installer clean build bin install uninstall test prepare
 
 all: linux
+
+prepare:
+	@mkdir -p /tmp
+	@echo "$(TOTAL_OBJ)" > /tmp/tlescope_build_total
+	@echo "0" > /tmp/tlescope_build_counter
+	@echo "$(TOTAL_WIN_OBJ)" > /tmp/tlescope_build_total_win
+	@echo "0" > /tmp/tlescope_build_counter_win
 
 build/main.o: src/render/map_view.h src/expo/expo_mode.h src/ui/logo.h
 
@@ -113,7 +118,7 @@ clean-libs:
 	rm -f $(RAYLIB_LIB) $(RAYLIB_SRC)/libraylib.web.a $(RAYLIB_SRC)/libraylib.so*
 	rm -f $(RAYLIB_SRC)/raygui.c $(RAYLIB_SRC)/*-protocol.h $(RAYLIB_SRC)/*-protocol-code.h $(RAYLIB_SRC)/*-protocol-code.c
 
-linux: $(ICON_OUT) raylib bin/TLEscope
+linux: prepare $(ICON_OUT) raylib bin/TLEscope
 	rm -rf $(DIST_LINUX)
 	@mkdir -p $(DIST_LINUX)
 	cp bin/TLEscope $(DIST_LINUX)/TLEscope.tmp && mv -f $(DIST_LINUX)/TLEscope.tmp $(DIST_LINUX)/TLEscope
@@ -122,7 +127,7 @@ linux: $(ICON_OUT) raylib bin/TLEscope
 	@echo "Linux build bundled in $(DIST_LINUX)/"
 	@echo "Run it with: cd $(DIST_LINUX)/ && ./TLEscope"
 
-macos: $(ICNS_OUT) raylib bin/TLEscope-macos
+macos: prepare $(ICNS_OUT) raylib bin/TLEscope-macos
 	rm -rf $(DIST_MACOS)
 	@mkdir -p $(DIST_MACOS)
 	cp bin/TLEscope-macos $(DIST_MACOS)/TLEscope
@@ -132,7 +137,7 @@ macos: $(ICNS_OUT) raylib bin/TLEscope-macos
 	@echo "Run it with: cd $(DIST_MACOS)/ && ./TLEscope"
 	@echo "To make a MacOS bundle: ./macos_bundle.sh"
 
-windows: raylib bin/TLEscope.exe
+windows: prepare raylib bin/TLEscope.exe
 	rm -rf $(DIST_WIN)
 	@mkdir -p $(DIST_WIN)
 	cp bin/TLEscope.exe $(DIST_WIN)/
@@ -141,7 +146,7 @@ windows: raylib bin/TLEscope.exe
 	cp $(MINGW_PREFIX)/bin/libssp*.dll $(DIST_WIN)/ 2>/dev/null || true
 	@echo "Windows build bundled in $(DIST_WIN)/, run it from there!"
 
-windows-arm64: raylib bin/TLEscope-arm64.exe
+windows-arm64: prepare raylib bin/TLEscope-arm64.exe
 	rm -rf $(DIST_WIN_ARM64)
 	@mkdir -p $(DIST_WIN_ARM64)
 	cp bin/TLEscope-arm64.exe $(DIST_WIN_ARM64)/TLEscope.exe
@@ -177,27 +182,27 @@ bin/TLEscope-arm64.exe: $(OBJ_WIN) build_win/versioninfo.o | bin
 	$(CC_WIN) $(CXXFLAGS_WIN) -o $@ $^ $(LDFLAGS_WIN)
 	@printf "\033[1;32mBuild complete! \033[0m\033[0;36mTLEscope v$(GIT_VERSION)\033[0m\n"
 
-build/%.o: src/%.cpp | build
+build/%.o: src/%.cpp | prepare build
 	@mkdir -p $(@D)
 	@scripts/progress.sh $(CC_LINUX) $(CXXFLAGS_LIN) -c $< -o $@
 
-build/%.o: lib/imgui/%.cpp | build
+build/%.o: lib/imgui/%.cpp | prepare build
 	@mkdir -p $(@D)
 	@scripts/progress.sh $(CC_LINUX) $(CXXFLAGS_LIN) -c $< -o $@
 
-build/%.o: lib/rlImGui/%.cpp | build
+build/%.o: lib/rlImGui/%.cpp | prepare build
 	@mkdir -p $(@D)
 	@scripts/progress.sh $(CC_LINUX) $(CXXFLAGS_LIN) -c $< -o $@
 
-build_win/%.o: src/%.cpp | build_win
+build_win/%.o: src/%.cpp | prepare build_win
 	@mkdir -p $(@D)
 	@COUNTER_FILE=/tmp/tlescope_build_counter_win TOTAL_FILE=/tmp/tlescope_build_total_win scripts/progress.sh $(CC_WIN) $(CXXFLAGS_WIN) -c $< -o $@
 
-build_win/%.o: lib/imgui/%.cpp | build_win
+build_win/%.o: lib/imgui/%.cpp | prepare build_win
 	@mkdir -p $(@D)
 	@COUNTER_FILE=/tmp/tlescope_build_counter_win TOTAL_FILE=/tmp/tlescope_build_total_win scripts/progress.sh $(CC_WIN) $(CXXFLAGS_WIN) -c $< -o $@
 
-build_win/%.o: lib/rlImGui/%.cpp | build_win
+build_win/%.o: lib/rlImGui/%.cpp | prepare build_win
 	@mkdir -p $(@D)
 	@COUNTER_FILE=/tmp/tlescope_build_counter_win TOTAL_FILE=/tmp/tlescope_build_total_win scripts/progress.sh $(CC_WIN) $(CXXFLAGS_WIN) -c $< -o $@
 
@@ -232,6 +237,8 @@ bin:
 
 clean:
 	rm -rf build build_win bin dist
+	rm -f /tmp/tlescope_build_total /tmp/tlescope_build_counter
+	rm -f /tmp/tlescope_build_total_win /tmp/tlescope_build_counter_win
 
 install:
 	@echo "Installing to $(DESTDIR)$(INSTALL_DIR)..."
